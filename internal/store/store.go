@@ -49,3 +49,17 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 }
 
 func (s *Store) Close() { s.pool.Close() }
+
+// AddCompany inserts a company, or updates its name if (ats, slug) already exists.
+// Safe to run any number of times.
+func (s *Store) AddCompany(ctx context.Context, name, ats, slug string) error {
+	// Placeholders ($1..$3), never fmt.Sprintf: Postgres treats the values as data, not SQL.
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO companies (name, ats, slug) VALUES ($1, $2, $3)
+		ON CONFLICT (ats, slug) DO UPDATE SET name = EXCLUDED.name`,
+		name, ats, slug)
+	if err != nil {
+		return fmt.Errorf("add company %s/%s: %w", ats, slug, err)
+	}
+	return nil
+}

@@ -2,16 +2,74 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/Ani-tem/hirewire/internal/fetcher"
+	"github.com/Ani-tem/hirewire/internal/store"
 )
 
+const usage = `usage: hirewire <command>
+
+  seed    add every company in data/companies.csv to the database
+  fetch   print Stripe's engineering roles (smoke test, no database)`
+
 func main() {
+	if len(os.Args) < 2 {
+		fmt.Println(usage)
+		os.Exit(2)
+	}
+	switch os.Args[1] {
+	case "seed":
+		seed()
+	case "fetch":
+		fetchDemo()
+	default:
+		fmt.Println(usage)
+		os.Exit(2)
+	}
+}
+
+func databaseURL() string {
+	if url := os.Getenv("DATABASE_URL"); url != "" {
+		return url
+	}
+	return "postgres://hirewire:hirewire@localhost:5433/hirewire?sslmode=disable"
+}
+
+func seed() {
+	ctx := context.Background()
+	s, err := store.Open(ctx, databaseURL())
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer s.Close()
+
+	f, err := os.Open("data/companies.csv")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+	rows, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, r := range rows[1:] { // skip the header row
+		name, ats, slug := r[0], r[1], r[2]
+		if err := s.AddCompany(ctx, name, ats, slug); err != nil {
+			log.Fatalf("%s: %v", name, err)
+		}
+	}
+	fmt.Printf("seeded %d companies\n", len(rows)-1)
+}
+
+func fetchDemo() {
 	// Never call the network without a timeout: a hung server would hang us forever.
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
