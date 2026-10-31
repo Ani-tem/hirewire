@@ -1,0 +1,8 @@
+# binaries
+/hirewire
+/bin/
+
+# env / secrets
+.env
+
+.DS_Store
