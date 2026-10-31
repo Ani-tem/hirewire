@@ -6,6 +6,8 @@ import (
 	_ "embed"
 	"fmt"
 
+	"github.com/Ani-tem/hirewire/internal/fetcher"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -62,4 +64,46 @@ func (s *Store) AddCompany(ctx context.Context, name, ats, slug string) error {
 		return fmt.Errorf("add company %s/%s: %w", ats, slug, err)
 	}
 	return nil
+}
+
+// GetCompany looks up one company by its board.
+func (s *Store) GetCompany(ctx context.Context, ats, slug string) (Company, error) {
+	var c Company
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, name, ats, slug, baseline_done FROM companies
+		WHERE ats = $1 AND slug = $2`, ats, slug,
+	).Scan(&c.ID, &c.Name, &c.ATS, &c.Slug, &c.BaselineDone)
+	if err != nil {
+		return Company{}, fmt.Errorf("get company %s/%s: %w", ats, slug, err)
+	}
+	return c, nil
+}
+
+// SaveJobs stores a company's current postings and returns the IDs of the ones
+// we had never seen before. Jobs already in the table are left untouched.
+func (s *Store) SaveJobs(ctx context.Context, companyID int64, jobs []fetcher.Job) ([]int64, error) {
+	// One round trip for the whole board: send each column as an array and let
+	// unnest turn them back into rows. RETURNING only yields rows actually inserted.
+	ids := make([]string, len(jobs))
+	titles := make([]string, len(jobs))
+	locations := make([]string, len(jobs))
+	urls := make([]string, len(jobs))
+	for i, j := range jobs {
+		ids[i], titles[i], locations[i], urls[i] = j.ID, j.Title, j.Location, j.URL
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		INSERT INTO jobs (company_id, external_id, title, location, url)
+		SELECT $1, * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[])
+		ON CONFLICT (company_id, external_id) DO NOTHING
+		RETURNING id`,
+		companyID, ids, titles, locations, urls)
+	if err != nil {
+		return nil, fmt.Errorf("save jobs for company %d: %w", companyID, err)
+	}
+	newIDs, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return nil, fmt.Errorf("save jobs for company %d: %w", companyID, err)
+	}
+	return newIDs, nil
 }

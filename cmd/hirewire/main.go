@@ -16,8 +16,9 @@ import (
 
 const usage = `usage: hirewire <command>
 
-  seed    add every company in data/companies.csv to the database
-  fetch   print Stripe's engineering roles (smoke test, no database)`
+  seed          add every company in data/companies.csv to the database
+  crawl <slug>  fetch one Greenhouse board, save it, report how many jobs are new
+  fetch  print Stripe's engineering roles (smoke test, no database)`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -27,6 +28,12 @@ func main() {
 	switch os.Args[1] {
 	case "seed":
 		seed()
+	case "crawl":
+		if len(os.Args) < 3 {
+			fmt.Println(usage)
+			os.Exit(2)
+		}
+		crawl(os.Args[2])
 	case "fetch":
 		fetchDemo()
 	default:
@@ -67,6 +74,30 @@ func seed() {
 		}
 	}
 	fmt.Printf("seeded %d companies\n", len(rows)-1)
+}
+
+func crawl(slug string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	s, err := store.Open(ctx, databaseURL())
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer s.Close()
+
+	c, err := s.GetCompany(ctx, "greenhouse", slug)
+	if err != nil {
+		log.Fatal(err)
+	}
+	jobs, err := fetcher.FetchGreenhouse(ctx, &http.Client{Timeout: 10 * time.Second}, slug)
+	if err != nil {
+		log.Fatal(err)
+	}
+	newIDs, err := s.SaveJobs(ctx, c.ID, jobs)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%s: %d jobs on the board, %d new\n", c.Name, len(jobs), len(newIDs))
 }
 
 func fetchDemo() {
