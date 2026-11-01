@@ -35,8 +35,8 @@ go run ./cmd/hirewire crawl stripe  # fetch a board and report new jobs
 ```
 
 ```
-Stripe: 746 jobs on the board, 746 new
-Stripe: 746 jobs on the board, 0 new
+Stripe: baseline saved, 745 jobs already on the board (no alerts)
+Stripe: 745 jobs on the board, 0 new
 ```
 
 Set `DATABASE_URL` to use a different Postgres.
