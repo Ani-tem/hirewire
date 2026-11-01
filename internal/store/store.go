@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"time"
 
 	"github.com/Ani-tem/hirewire/internal/fetcher"
 	"github.com/jackc/pgx/v5"
@@ -79,6 +80,47 @@ func (s *Store) GetCompany(ctx context.Context, ats, slug string) (Company, erro
 	return c, nil
 }
 
+// ClaimDueCompanies hands out up to limit companies that are due for a crawl.
+// Claiming pushes next_poll_at forward by lease, so no other worker picks the
+// same company up; if the crawler dies mid-crawl, the lease simply runs out
+// and the company becomes due again.
+func (s *Store) ClaimDueCompanies(ctx context.Context, limit int, lease time.Duration) ([]Company, error) {
+	// SKIP LOCKED: rows another worker is claiming right now are skipped, not waited on.
+	rows, err := s.pool.Query(ctx, `
+		UPDATE companies SET next_poll_at = now() + make_interval(secs => $2)
+		WHERE id IN (
+			SELECT id FROM companies
+			WHERE enabled AND next_poll_at <= now()
+			ORDER BY next_poll_at
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED)
+		RETURNING id, name, ats, slug, baseline_done`,
+		limit, lease.Seconds())
+	if err != nil {
+		return nil, fmt.Errorf("claim due companies: %w", err)
+	}
+	companies, err := pgx.CollectRows(rows, pgx.RowToStructByPos[Company])
+	if err != nil {
+		return nil, fmt.Errorf("claim due companies: %w", err)
+	}
+	return companies, nil
+}
+
+// RecordFailure counts a failed crawl and backs off: the next poll waits
+// poll_interval × 2^failures, capped at 6 hours, so a broken board isn't hammered.
+func (s *Store) RecordFailure(ctx context.Context, companyID int64) error {
+	// On the right of SET, consecutive_failures is still the old value.
+	_, err := s.pool.Exec(ctx, `
+		UPDATE companies SET
+			consecutive_failures = consecutive_failures + 1,
+			next_poll_at = now() + LEAST(poll_interval * power(2, consecutive_failures + 1), interval '6 hours')
+		WHERE id = $1`, companyID)
+	if err != nil {
+		return fmt.Errorf("record failure for company %d: %w", companyID, err)
+	}
+	return nil
+}
+
 // CrawlResult is what one crawl of a board changed.
 type CrawlResult struct {
 	NewJobIDs []int64 // jobs we had never seen before
@@ -104,10 +146,13 @@ func (s *Store) RecordCrawl(ctx context.Context, companyID int64, jobs []fetcher
 			return err
 		}
 
-		if !baselineDone {
-			if _, err := tx.Exec(ctx, `UPDATE companies SET baseline_done = true WHERE id = $1`, companyID); err != nil {
-				return err
-			}
+		// A successful crawl ends the baseline, clears any failure streak and books the next poll.
+		_, err = tx.Exec(ctx, `
+			UPDATE companies SET baseline_done = true, last_success_at = now(),
+				consecutive_failures = 0, next_poll_at = now() + poll_interval
+			WHERE id = $1`, companyID)
+		if err != nil {
+			return err
 		}
 		res = CrawlResult{NewJobIDs: ids, Baseline: !baselineDone}
 		return nil

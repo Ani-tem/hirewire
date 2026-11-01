@@ -4,26 +4,50 @@ import (
 	"context"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Ani-tem/hirewire/internal/fetcher"
+	"github.com/jackc/pgx/v5"
 )
 
-// testStore connects to the local docker compose Postgres (or $DATABASE_URL).
+// testStore connects to a separate hirewire_test database (or $TEST_DATABASE_URL),
+// creating it on first use, so tests can wipe tables without touching dev data.
 // It fails rather than skips without a database, so a broken setup can't pass silently.
 func testStore(t *testing.T) *Store {
 	t.Helper()
-	url := os.Getenv("DATABASE_URL")
+	ctx := context.Background()
+	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
-		url = "postgres://hirewire:hirewire@localhost:5433/hirewire?sslmode=disable"
+		url = "postgres://hirewire:hirewire@localhost:5433/hirewire_test?sslmode=disable"
+		admin, err := pgx.Connect(ctx, "postgres://hirewire:hirewire@localhost:5433/hirewire?sslmode=disable")
+		if err != nil {
+			t.Fatalf("no database (run `docker compose up -d`): %v", err)
+		}
+		var exists bool
+		admin.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'hirewire_test')`).Scan(&exists)
+		if !exists {
+			if _, err := admin.Exec(ctx, `CREATE DATABASE hirewire_test`); err != nil {
+				t.Fatalf("create test database: %v", err)
+			}
+		}
+		admin.Close(ctx)
 	}
-	s, err := Open(context.Background(), url)
+	s, err := Open(ctx, url)
 	if err != nil {
 		t.Fatalf("no database (run `docker compose up -d`): %v", err)
 	}
 	t.Cleanup(s.Close)
 	return s
+}
+
+// reset empties every table, for tests that care about the whole companies table.
+func reset(t *testing.T, s *Store) {
+	t.Helper()
+	if _, err := s.pool.Exec(context.Background(), `TRUNCATE companies CASCADE`); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestAddCompanyIsIdempotent(t *testing.T) {
@@ -101,6 +125,87 @@ func TestRecordCrawl(t *testing.T) {
 		if len(got.NewJobIDs) != cr.wantNew || got.Baseline != cr.wantBaseline {
 			t.Errorf("%s: got %d new, baseline=%v; want %d new, baseline=%v",
 				cr.name, len(got.NewJobIDs), got.Baseline, cr.wantNew, cr.wantBaseline)
+		}
+	}
+}
+
+func TestClaimDueCompaniesHandsEachCompanyOutOnce(t *testing.T) {
+	s := testStore(t)
+	reset(t, s)
+	ctx := context.Background()
+	for i := range 20 {
+		if err := s.AddCompany(ctx, "Co", "greenhouse", "co-"+strconv.Itoa(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Eight workers claim at the same moment. Every company must go to exactly one of them.
+	var mu sync.Mutex
+	seen := map[int64]int{}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := s.ClaimDueCompanies(ctx, 5, time.Minute)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			mu.Lock()
+			for _, c := range got {
+				seen[c.ID]++
+			}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	if len(seen) != 20 {
+		t.Errorf("claimed %d distinct companies, want all 20", len(seen))
+	}
+	for id, n := range seen {
+		if n > 1 {
+			t.Errorf("company %d was claimed %d times", id, n)
+		}
+	}
+
+	// Everything is leased now, so nothing is due.
+	got, err := s.ClaimDueCompanies(ctx, 5, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("claimed %d companies while all are leased, want 0", len(got))
+	}
+}
+
+func TestRecordFailureBacksOff(t *testing.T) {
+	s := testStore(t)
+	reset(t, s)
+	ctx := context.Background()
+	if err := s.AddCompany(ctx, "Flaky", "greenhouse", "flaky"); err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.GetCompany(ctx, "greenhouse", "flaky")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// poll_interval is 15 minutes, so failures wait 30m, 1h, 2h, 4h, then stay at the 6h cap.
+	want := []time.Duration{30 * time.Minute, time.Hour, 2 * time.Hour, 4 * time.Hour, 6 * time.Hour, 6 * time.Hour}
+	for i, w := range want {
+		if err := s.RecordFailure(ctx, c.ID); err != nil {
+			t.Fatal(err)
+		}
+		var wait float64
+		err := s.pool.QueryRow(ctx,
+			`SELECT EXTRACT(EPOCH FROM next_poll_at - now()) FROM companies WHERE id = $1`, c.ID).Scan(&wait)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := time.Duration(wait) * time.Second; got.Round(time.Minute) != w {
+			t.Errorf("failure %d: next poll in %v, want %v", i+1, got.Round(time.Minute), w)
 		}
 	}
 }

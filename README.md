@@ -4,7 +4,7 @@ Get a Telegram alert the moment a company you care about posts a job that matche
 
 hirewire polls the public job-board APIs that companies use (Greenhouse today; Lever and Ashby next), works out which postings are new, and alerts every user whose filters match. It is written in Go and runs as a single binary backed by PostgreSQL.
 
-> **Status:** in progress. Fetching, company seeding, new-job detection and the first-crawl baseline work. Scheduling, matching and Telegram delivery are next. See the [roadmap](#roadmap).
+> **Status:** in progress. Fetching, company seeding, new-job detection, the first-crawl baseline and scheduled crawling work. Concurrency, matching and Telegram delivery are next. See the [roadmap](#roadmap).
 
 ## How it works
 
@@ -32,6 +32,7 @@ docker compose up -d                # Postgres on localhost:5433
 go test ./...                       # store tests need the database running
 go run ./cmd/hirewire seed          # load data/companies.csv
 go run ./cmd/hirewire crawl stripe  # fetch a board and report new jobs
+go run ./cmd/hirewire run           # crawl every company on schedule until Ctrl-C
 ```
 
 ```
@@ -44,7 +45,8 @@ Set `DATABASE_URL` to use a different Postgres.
 ## Layout
 
 ```
-cmd/hirewire/       CLI entry point (seed, crawl, fetch)
+cmd/hirewire/       CLI entry point (run, seed, crawl, fetch)
+internal/crawler/   the scheduler loop: claim due boards, crawl, record
 internal/fetcher/   ATS API clients, normalized into one Job type
 internal/store/     all SQL; schema.sql is embedded into the binary
 data/companies.csv  the boards we track
@@ -57,7 +59,7 @@ docs/design.md      high-level design and decisions
 - [x] Postgres schema and idempotent company seeding
 - [x] Batched save with new-job detection
 - [x] Baseline on first crawl
-- [ ] Scheduler with `FOR UPDATE SKIP LOCKED`
+- [x] Scheduler with `FOR UPDATE SKIP LOCKED`
 - [ ] Concurrent crawler worker pool
 - [ ] Lever and Ashby fetchers (more Indian companies)
 - [ ] Keyword and location matching

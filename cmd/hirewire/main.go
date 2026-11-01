@@ -5,17 +5,22 @@ import (
 	"encoding/csv"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/Ani-tem/hirewire/internal/crawler"
 	"github.com/Ani-tem/hirewire/internal/fetcher"
 	"github.com/Ani-tem/hirewire/internal/store"
 )
 
 const usage = `usage: hirewire <command>
 
+  run           crawl every company on schedule until Ctrl-C
   seed          add every company in data/companies.csv to the database
   crawl <slug>  fetch one Greenhouse board, save it, report how many jobs are new
   fetch  print Stripe's engineering roles (smoke test, no database)`
@@ -26,6 +31,8 @@ func main() {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
+	case "run":
+		run()
 	case "seed":
 		seed()
 	case "crawl":
@@ -47,6 +54,23 @@ func databaseURL() string {
 		return url
 	}
 	return "postgres://hirewire:hirewire@localhost:5433/hirewire?sslmode=disable"
+}
+
+func run() {
+	// Ctrl-C (or SIGTERM from a deploy) cancels ctx, and the crawler stops after its current board.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	s, err := store.Open(ctx, databaseURL())
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer s.Close()
+
+	c := &crawler.Crawler{Store: s, Client: &http.Client{Timeout: 30 * time.Second}, Log: slog.Default()}
+	slog.Info("hirewire running, Ctrl-C to stop")
+	c.Run(ctx)
+	slog.Info("stopped")
 }
 
 func seed() {
