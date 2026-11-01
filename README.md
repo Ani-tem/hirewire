@@ -4,7 +4,7 @@ Get a Telegram alert the moment a company you care about posts a job that matche
 
 hirewire polls the public job-board APIs that companies use (Greenhouse today; Lever and Ashby next), works out which postings are new, and alerts every user whose filters match. It is written in Go and runs as a single binary backed by PostgreSQL.
 
-> **Status:** in progress. Fetching, company seeding and new-job detection work. Scheduling, matching and Telegram delivery are next. See the [roadmap](#roadmap).
+> **Status:** in progress. Fetching, company seeding, new-job detection and the first-crawl baseline work. Scheduling, matching and Telegram delivery are next. See the [roadmap](#roadmap).
 
 ## How it works
 
@@ -56,7 +56,7 @@ docs/design.md      high-level design and decisions
 - [x] Greenhouse fetcher
 - [x] Postgres schema and idempotent company seeding
 - [x] Batched save with new-job detection
-- [ ] Baseline on first crawl
+- [x] Baseline on first crawl
 - [ ] Scheduler with `FOR UPDATE SKIP LOCKED`
 - [ ] Concurrent crawler worker pool
 - [ ] Lever and Ashby fetchers (more Indian companies)

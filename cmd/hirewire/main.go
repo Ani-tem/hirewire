@@ -93,11 +93,15 @@ func crawl(slug string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	newIDs, err := s.SaveJobs(ctx, c.ID, jobs)
+	res, err := s.RecordCrawl(ctx, c.ID, jobs)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("%s: %d jobs on the board, %d new\n", c.Name, len(jobs), len(newIDs))
+	if res.Baseline {
+		fmt.Printf("%s: baseline saved, %d jobs already on the board (no alerts)\n", c.Name, len(res.NewJobIDs))
+		return
+	}
+	fmt.Printf("%s: %d jobs on the board, %d new\n", c.Name, len(jobs), len(res.NewJobIDs))
 }
 
 func fetchDemo() {

@@ -63,7 +63,7 @@ func TestAddCompanyRejectsUnknownATS(t *testing.T) {
 	}
 }
 
-func TestSaveJobsReturnsOnlyNewJobs(t *testing.T) {
+func TestRecordCrawl(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	slug := "test-" + strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -83,30 +83,24 @@ func TestSaveJobsReturnsOnlyNewJobs(t *testing.T) {
 		return fetcher.Job{ID: id, Title: "Engineer " + id, Location: "Bengaluru", URL: "https://x/" + id}
 	}
 
-	// First crawl: everything is new.
-	got, err := s.SaveJobs(ctx, c.ID, []fetcher.Job{job("1"), job("2")})
-	if err != nil {
-		t.Fatal(err)
+	crawls := []struct {
+		name         string
+		board        []fetcher.Job
+		wantNew      int
+		wantBaseline bool
+	}{
+		{"first crawl is the baseline", []fetcher.Job{job("1"), job("2")}, 2, true},
+		{"job 3 is posted", []fetcher.Job{job("1"), job("2"), job("3")}, 1, false},
+		{"nothing changed", []fetcher.Job{job("1"), job("2"), job("3")}, 0, false},
 	}
-	if len(got) != 2 {
-		t.Fatalf("first crawl: got %d new jobs, want 2", len(got))
-	}
-
-	// Second crawl: 1 and 2 are old, 3 was just posted.
-	got, err = s.SaveJobs(ctx, c.ID, []fetcher.Job{job("1"), job("2"), job("3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("second crawl: got %d new jobs, want 1", len(got))
-	}
-
-	// Same crawl again: nothing new.
-	got, err = s.SaveJobs(ctx, c.ID, []fetcher.Job{job("1"), job("2"), job("3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("repeat crawl: got %d new jobs, want 0", len(got))
+	for _, cr := range crawls {
+		got, err := s.RecordCrawl(ctx, c.ID, cr.board)
+		if err != nil {
+			t.Fatalf("%s: %v", cr.name, err)
+		}
+		if len(got.NewJobIDs) != cr.wantNew || got.Baseline != cr.wantBaseline {
+			t.Errorf("%s: got %d new, baseline=%v; want %d new, baseline=%v",
+				cr.name, len(got.NewJobIDs), got.Baseline, cr.wantNew, cr.wantBaseline)
+		}
 	}
 }
