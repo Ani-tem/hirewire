@@ -2,7 +2,6 @@ package fetcher
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -29,25 +28,9 @@ type greenhouseResponse struct {
 // FetchGreenhouse returns every open job on a company's Greenhouse board,
 // e.g. board "stripe" -> https://boards-api.greenhouse.io/v1/boards/stripe/jobs
 func FetchGreenhouse(ctx context.Context, client *http.Client, board string) ([]Job, error) {
-	url := fmt.Sprintf("%s/%s/jobs", greenhouseBaseURL, board)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("greenhouse %s: %w", board, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("greenhouse %s: unexpected status %d", board, resp.StatusCode)
-	}
-
 	var body greenhouseResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("greenhouse %s: decode: %w", board, err)
+	if err := getJSON(ctx, client, fmt.Sprintf("%s/%s/jobs", greenhouseBaseURL, board), &body); err != nil {
+		return nil, fmt.Errorf("greenhouse %s: %w", board, err)
 	}
 
 	jobs := make([]Job, 0, len(body.Jobs))

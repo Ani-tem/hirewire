@@ -16,7 +16,7 @@ import (
 const (
 	tick         = 5 * time.Second  // how often we ask the database what's due, when nothing is waiting
 	lease        = 5 * time.Minute  // a claimed company stays ours this long, even if we crash
-	fetchTimeout = 20 * time.Second // one board must answer within this
+	fetchTimeout = 60 * time.Second // Lever sends full descriptions at ~200 KB/s; Paytm alone is 3 MB
 )
 
 // Store is what the crawler needs from the database. *store.Store satisfies it;
@@ -122,10 +122,9 @@ func (c *Crawler) crawl(ctx context.Context, co store.Company) {
 }
 
 func fetch(ctx context.Context, client *http.Client, co store.Company) ([]fetcher.Job, error) {
-	switch co.ATS {
-	case "greenhouse":
-		return fetcher.FetchGreenhouse(ctx, client, co.Slug)
-	default:
+	f, ok := fetcher.Sources[co.ATS]
+	if !ok {
 		return nil, fmt.Errorf("unsupported ATS %q", co.ATS)
 	}
+	return f(ctx, client, co.Slug)
 }

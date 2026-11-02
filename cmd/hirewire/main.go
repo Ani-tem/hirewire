@@ -72,7 +72,7 @@ func run() {
 	// connections per host, so 8 workers would keep reconnecting (new TCP + TLS each time).
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConnsPerHost = workers
-	client := &http.Client{Timeout: 30 * time.Second, Transport: transport}
+	client := &http.Client{Timeout: 90 * time.Second, Transport: transport} // backstop above the crawler's per-board timeout
 
 	c := crawler.New(s, client, workers, slog.Default())
 	slog.Info("hirewire running, Ctrl-C to stop", "workers", workers)
