@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Ani-tem/hirewire/internal/fetcher"
@@ -13,24 +14,79 @@ import (
 )
 
 const (
-	tick         = 5 * time.Second  // how often we ask the database what's due
-	batchSize    = 10               // companies claimed per tick
+	tick         = 5 * time.Second  // how often we ask the database what's due, when nothing is waiting
 	lease        = 5 * time.Minute  // a claimed company stays ours this long, even if we crash
 	fetchTimeout = 20 * time.Second // one board must answer within this
 )
 
-type Crawler struct {
-	Store  *store.Store
-	Client *http.Client
-	Log    *slog.Logger
+// Store is what the crawler needs from the database. *store.Store satisfies it;
+// tests pass an in-memory fake.
+type Store interface {
+	ClaimDueCompanies(ctx context.Context, limit int, lease time.Duration) ([]store.Company, error)
+	RecordCrawl(ctx context.Context, companyID int64, jobs []fetcher.Job) (store.CrawlResult, error)
+	RecordFailure(ctx context.Context, companyID int64) error
 }
 
-// Run crawls due companies until ctx is cancelled.
+type Crawler struct {
+	Store   Store
+	Fetch   func(ctx context.Context, co store.Company) ([]fetcher.Job, error)
+	Workers int // boards crawled at the same time
+	Log     *slog.Logger
+}
+
+// New returns a crawler that fetches from the real job boards.
+func New(s Store, client *http.Client, workers int, log *slog.Logger) *Crawler {
+	return &Crawler{
+		Store:   s,
+		Workers: workers,
+		Log:     log,
+		Fetch: func(ctx context.Context, co store.Company) ([]fetcher.Job, error) {
+			return fetch(ctx, client, co)
+		},
+	}
+}
+
+// Run crawls due companies on c.Workers goroutines until ctx is cancelled,
+// and returns once every worker has exited.
 func (c *Crawler) Run(ctx context.Context) {
+	workers := max(c.Workers, 1)
+
+	// Unbuffered: a send completes only when a worker is free to take the board,
+	// so the dispatcher can never run ahead of the workers.
+	work := make(chan store.Company)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for co := range work {
+				c.crawl(ctx, co)
+			}
+		})
+	}
+
+	c.dispatch(ctx, work, workers)
+	close(work) // ends every worker's range loop
+	wg.Wait()
+}
+
+// dispatch claims due companies and hands them to the workers until ctx is cancelled.
+func (c *Crawler) dispatch(ctx context.Context, work chan<- store.Company, batch int) {
 	t := time.NewTicker(tick)
 	defer t.Stop()
 	for {
-		c.crawlDue(ctx)
+		companies, err := c.Store.ClaimDueCompanies(ctx, batch, lease)
+		if err != nil && ctx.Err() == nil {
+			c.Log.Error("claim due companies", "err", err)
+		}
+		for _, co := range companies {
+			select {
+			case work <- co:
+			case <-ctx.Done():
+				return // boards we claimed but never sent come back when their lease runs out
+			}
+		}
+		if len(companies) == batch {
+			continue // a full batch means more may be due: claim again without waiting
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -39,28 +95,12 @@ func (c *Crawler) Run(ctx context.Context) {
 	}
 }
 
-func (c *Crawler) crawlDue(ctx context.Context) {
-	companies, err := c.Store.ClaimDueCompanies(ctx, batchSize, lease)
-	if err != nil {
-		if ctx.Err() == nil {
-			c.Log.Error("claim due companies", "err", err)
-		}
-		return
-	}
-	for _, co := range companies {
-		if ctx.Err() != nil {
-			return // shutting down; unfinished companies come back when their lease runs out
-		}
-		c.crawl(ctx, co)
-	}
-}
-
 func (c *Crawler) crawl(ctx context.Context, co store.Company) {
 	start := time.Now()
 	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
-	jobs, err := fetch(fetchCtx, c.Client, co)
+	jobs, err := c.Fetch(fetchCtx, co)
 	var res store.CrawlResult
 	if err == nil {
 		res, err = c.Store.RecordCrawl(ctx, co.ID, jobs)

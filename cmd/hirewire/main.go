@@ -67,8 +67,15 @@ func run() {
 	}
 	defer s.Close()
 
-	c := &crawler.Crawler{Store: s, Client: &http.Client{Timeout: 30 * time.Second}, Log: slog.Default()}
-	slog.Info("hirewire running, Ctrl-C to stop")
+	const workers = 8
+	// Every Greenhouse board is on one host. Go's default keeps only 2 idle
+	// connections per host, so 8 workers would keep reconnecting (new TCP + TLS each time).
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = workers
+	client := &http.Client{Timeout: 30 * time.Second, Transport: transport}
+
+	c := crawler.New(s, client, workers, slog.Default())
+	slog.Info("hirewire running, Ctrl-C to stop", "workers", workers)
 	c.Run(ctx)
 	slog.Info("stopped")
 }
