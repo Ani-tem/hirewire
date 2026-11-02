@@ -4,7 +4,7 @@ Get a Telegram alert the moment a company you care about posts a job that matche
 
 hirewire polls the public job-board APIs that companies use (Greenhouse, Lever and Ashby, covering 46 companies including CRED, Meesho, Paytm, Sarvam AI, Stripe and OpenAI), works out which postings are new, and alerts every user whose filters match. It is written in Go and runs as a single binary backed by PostgreSQL.
 
-> **Status:** in progress. Fetching, company seeding, new-job detection, the first-crawl baseline and scheduled, concurrent crawling work. Matching and Telegram delivery are next. See the [roadmap](#roadmap).
+> **Status:** in progress. Fetching, company seeding, new-job detection, the first-crawl baseline, scheduled concurrent crawling and keyword matching work. The outbox and Telegram delivery are next. See the [roadmap](#roadmap).
 
 ## How it works
 
@@ -33,6 +33,8 @@ go test ./...                       # store tests need the database running
 go run ./cmd/hirewire seed          # load data/companies.csv
 go run ./cmd/hirewire crawl stripe  # fetch a board and report new jobs
 go run ./cmd/hirewire run           # crawl every company on schedule until Ctrl-C
+go run ./cmd/hirewire try -include "backend,sde" -exclude "senior,staff" -location "bengaluru,remote india"
+                                    # which stored jobs would this subscription get?
 ```
 
 ```
@@ -48,6 +50,7 @@ Set `DATABASE_URL` to use a different Postgres.
 cmd/hirewire/       CLI entry point (run, seed, crawl, fetch)
 internal/crawler/   dispatcher + worker pool: claim due boards, crawl in parallel, record
 internal/fetcher/   one client per ATS (Greenhouse, Lever, Ashby), all returning the same Job type
+internal/match/     keyword and location matching on whole words
 internal/store/     all SQL; schema.sql is embedded into the binary
 data/companies.csv  the boards we track
 docs/design.md      high-level design and decisions
@@ -62,7 +65,7 @@ docs/design.md      high-level design and decisions
 - [x] Scheduler with `FOR UPDATE SKIP LOCKED`
 - [x] Concurrent crawler worker pool
 - [x] Lever and Ashby fetchers (more Indian companies)
-- [ ] Keyword and location matching
+- [x] Keyword and location matching
 - [ ] Transactional outbox
 - [ ] Telegram bot and rate-limited notifier with retries
 - [ ] Deploy, then real users

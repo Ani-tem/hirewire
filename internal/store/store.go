@@ -80,6 +80,30 @@ func (s *Store) GetCompany(ctx context.Context, ats, slug string) (Company, erro
 	return c, nil
 }
 
+// StoredJob is a job as saved, with its company's name.
+type StoredJob struct {
+	Company  string
+	Title    string
+	Location string
+	URL      string
+}
+
+// ListJobs returns every stored job, newest first.
+func (s *Store) ListJobs(ctx context.Context) ([]StoredJob, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT c.name, j.title, j.location, j.url
+		FROM jobs j JOIN companies c ON c.id = j.company_id
+		ORDER BY j.first_seen_at DESC, j.id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list jobs: %w", err)
+	}
+	jobs, err := pgx.CollectRows(rows, pgx.RowToStructByPos[StoredJob])
+	if err != nil {
+		return nil, fmt.Errorf("list jobs: %w", err)
+	}
+	return jobs, nil
+}
+
 // ClaimDueCompanies hands out up to limit companies that are due for a crawl.
 // Claiming pushes next_poll_at forward by lease, so no other worker picks the
 // same company up; if the crawler dies mid-crawl, the lease simply runs out

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/csv"
+	"flag"
 	"fmt"
 	"log"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/Ani-tem/hirewire/internal/crawler"
 	"github.com/Ani-tem/hirewire/internal/fetcher"
+	"github.com/Ani-tem/hirewire/internal/match"
 	"github.com/Ani-tem/hirewire/internal/store"
 )
 
@@ -22,6 +24,8 @@ const usage = `usage: hirewire <command>
 
   run           crawl every company on schedule until Ctrl-C
   seed          add every company in data/companies.csv to the database
+  try [flags]   show which stored jobs a subscription would match, e.g.
+                try -include "backend,sde" -exclude "senior,staff" -location "bengaluru,remote"
   crawl <slug>  fetch one Greenhouse board, save it, report how many jobs are new
   fetch  print Stripe's engineering roles (smoke test, no database)`
 
@@ -35,6 +39,8 @@ func main() {
 		run()
 	case "seed":
 		seed()
+	case "try":
+		try(os.Args[2:])
 	case "crawl":
 		if len(os.Args) < 3 {
 			fmt.Println(usage)
@@ -78,6 +84,46 @@ func run() {
 	slog.Info("hirewire running, Ctrl-C to stop", "workers", workers)
 	c.Run(ctx)
 	slog.Info("stopped")
+}
+
+func try(args []string) {
+	fs := flag.NewFlagSet("try", flag.ExitOnError)
+	include := fs.String("include", "", "comma-separated title keywords; at least one must appear")
+	exclude := fs.String("exclude", "", "comma-separated title keywords; none may appear")
+	location := fs.String("location", "", "comma-separated locations; at least one must appear")
+	fs.Parse(args)
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, databaseURL())
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer s.Close()
+	jobs, err := s.ListJobs(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	m := match.Compile(match.Filter{Include: list(*include), Exclude: list(*exclude), Locations: list(*location)})
+	matched := 0
+	for _, j := range jobs {
+		if !m.Match(j.Title, j.Location) {
+			continue
+		}
+		if matched < 25 {
+			fmt.Printf("%-12.12s | %-50.50s | %-28.28s\n", j.Company, j.Title, j.Location)
+		}
+		matched++
+	}
+	fmt.Printf("\n%d of %d jobs match\n", matched, len(jobs))
+}
+
+// list splits a comma-separated flag value.
+func list(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
 }
 
 func seed() {
