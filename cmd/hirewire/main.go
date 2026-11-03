@@ -178,7 +178,7 @@ func crawl(slug string) {
 		fmt.Printf("%s: baseline saved, %d jobs already on the board (no alerts)\n", c.Name, len(res.NewJobIDs))
 		return
 	}
-	fmt.Printf("%s: %d jobs on the board, %d new\n", c.Name, len(jobs), len(res.NewJobIDs))
+	fmt.Printf("%s: %d jobs on the board, %d new, %d notifications queued\n", c.Name, len(jobs), len(res.NewJobIDs), res.Notified)
 }
 
 func fetchDemo() {

@@ -66,6 +66,6 @@ docs/design.md      high-level design and decisions
 - [x] Concurrent crawler worker pool
 - [x] Lever and Ashby fetchers (more Indian companies)
 - [x] Keyword and location matching
-- [ ] Transactional outbox
+- [x] Transactional outbox: notifications queued in the same transaction as the jobs
 - [ ] Telegram bot and rate-limited notifier with retries
 - [ ] Deploy, then real users

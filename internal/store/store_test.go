@@ -3,12 +3,14 @@ package store
 import (
 	"context"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Ani-tem/hirewire/internal/fetcher"
+	"github.com/Ani-tem/hirewire/internal/match"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -45,7 +47,7 @@ func testStore(t *testing.T) *Store {
 // reset empties every table, for tests that care about the whole companies table.
 func reset(t *testing.T, s *Store) {
 	t.Helper()
-	if _, err := s.pool.Exec(context.Background(), `TRUNCATE companies CASCADE`); err != nil {
+	if _, err := s.pool.Exec(context.Background(), `TRUNCATE companies, users CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -207,5 +209,87 @@ func TestRecordFailureBacksOff(t *testing.T) {
 		if got := time.Duration(wait) * time.Second; got.Round(time.Minute) != w {
 			t.Errorf("failure %d: next poll in %v, want %v", i+1, got.Round(time.Minute), w)
 		}
+	}
+}
+
+func TestRecordCrawlQueuesNotifications(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	reset(t, s)
+	t.Cleanup(func() { reset(t, s) }) // leftover subscriptions would match other tests' jobs
+
+	if err := s.AddCompany(ctx, "Razorpay", "greenhouse", "razorpay"); err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.GetCompany(ctx, "greenhouse", "razorpay")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	subscribe := func(chatID int64, f ...match.Filter) int64 {
+		t.Helper()
+		id, err := s.AddUser(ctx, chatID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range f {
+			if _, err := s.AddSubscription(ctx, id, f); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return id
+	}
+	backend := match.Filter{Include: []string{"backend"}, Exclude: []string{"senior"}, Locations: []string{"bengaluru"}}
+	// Ravi has two subscriptions that both match a Bengaluru backend job.
+	ravi := subscribe(1, backend, match.Filter{Locations: []string{"bengaluru"}})
+	priya := subscribe(2, match.Filter{Include: []string{"designer"}})
+	gone := subscribe(3, backend)
+	if _, err := s.pool.Exec(ctx, `UPDATE users SET active = false WHERE id = $1`, gone); err != nil {
+		t.Fatal(err)
+	}
+
+	job := func(id, title, loc string) fetcher.Job {
+		return fetcher.Job{ID: id, Title: title, Location: loc, URL: "https://x/" + id}
+	}
+	old := job("1", "Backend Engineer", "Bangalore") // matches Ravi, but was already on the board
+
+	crawls := []struct {
+		name         string
+		board        []fetcher.Job
+		wantNotified int
+	}{
+		{"baseline queues nothing", []fetcher.Job{old}, 0},
+		{"one job, two of ravi's subscriptions: one alert", []fetcher.Job{old, job("2", "Backend Engineer", "Bengaluru")}, 1},
+		{"no one wants a senior SF role", []fetcher.Job{old, job("3", "Senior Backend Engineer", "San Francisco")}, 0},
+		{"designer reaches priya only", []fetcher.Job{old, job("4", "Product Designer", "Remote")}, 1},
+	}
+	for _, cr := range crawls {
+		got, err := s.RecordCrawl(ctx, c.ID, cr.board)
+		if err != nil {
+			t.Fatalf("%s: %v", cr.name, err)
+		}
+		if got.Notified != cr.wantNotified {
+			t.Errorf("%s: notified %d, want %d", cr.name, got.Notified, cr.wantNotified)
+		}
+	}
+
+	// The outbox itself: exactly these pending rows, and nothing for the inactive user.
+	rows, err := s.pool.Query(ctx, `
+		SELECT n.user_id, j.external_id FROM notifications n JOIN jobs j ON j.id = n.job_id
+		WHERE n.status = 'pending' ORDER BY n.user_id, j.external_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type pair struct {
+		UserID int64
+		JobID  string
+	}
+	got, err := pgx.CollectRows(rows, pgx.RowToStructByPos[pair])
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []pair{{ravi, "2"}, {priya, "4"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("pending notifications = %v, want %v", got, want)
 	}
 }

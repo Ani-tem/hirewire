@@ -116,9 +116,8 @@ func (c *Crawler) crawl(ctx context.Context, co store.Company) {
 		return
 	}
 
-	// TODO(step 7): match res.NewJobIDs against subscriptions instead of only logging them.
 	c.Log.Info("crawled", "company", co.Name, "jobs", len(jobs), "new", len(res.NewJobIDs),
-		"baseline", res.Baseline, "took", time.Since(start).Round(time.Millisecond))
+		"notified", res.Notified, "baseline", res.Baseline, "took", time.Since(start).Round(time.Millisecond))
 }
 
 func fetch(ctx context.Context, client *http.Client, co store.Company) ([]fetcher.Job, error) {
