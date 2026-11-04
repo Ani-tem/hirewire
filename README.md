@@ -2,7 +2,7 @@
 
 Get a Telegram alert the moment a company you care about posts a job that matches you.
 
-hirewire polls the public job-board APIs that companies use (Greenhouse, Lever and Ashby, covering 46 companies including CRED, Meesho, Paytm, Sarvam AI, Stripe and OpenAI), works out which postings are new, and alerts every user whose filters match. It is written in Go and runs as a single binary backed by PostgreSQL.
+hirewire polls the public job-board APIs that companies use (Greenhouse, Lever and Ashby, covering 170 companies including CRED, Meesho, Paytm, Sarvam AI, Stripe and OpenAI), works out which postings are new, and alerts every user whose filters match. It is written in Go and runs as a single binary backed by PostgreSQL.
 
 > **Status:** in progress. Fetching, company seeding, new-job detection, the first-crawl baseline, scheduled concurrent crawling and keyword matching work. The outbox and Telegram delivery are next. See the [roadmap](#roadmap).
 
