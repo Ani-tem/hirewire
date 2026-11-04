@@ -5,7 +5,6 @@ import (
 	"encoding/csv"
 	"flag"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -64,6 +63,15 @@ func main() {
 	}
 }
 
+// fatal logs at ERROR level and exits. log.Fatal would log at INFO under slog's
+// JSON handler, hiding a crash from anything that filters on level.
+func fatal(err any) {
+	slog.Error(fmt.Sprint(err))
+	os.Exit(1)
+}
+
+func fatalf(format string, args ...any) { fatal(fmt.Sprintf(format, args...)) }
+
 func databaseURL() string {
 	if url := os.Getenv("DATABASE_URL"); url != "" {
 		return url
@@ -78,12 +86,12 @@ func run() {
 
 	s, err := store.Open(ctx, databaseURL())
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	defer s.Close()
 	n, err := seedCompanies(ctx, s)
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	slog.Info("companies seeded", "count", n)
 
@@ -128,12 +136,12 @@ func try(args []string) {
 	ctx := context.Background()
 	s, err := store.Open(ctx, databaseURL())
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	defer s.Close()
 	jobs, err := s.ListJobs(ctx)
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 
 	m := match.Compile(match.Filter{Include: list(*include), Exclude: list(*exclude), Locations: list(*location)})
@@ -162,12 +170,12 @@ func seed() {
 	ctx := context.Background()
 	s, err := store.Open(ctx, databaseURL())
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	defer s.Close()
 	n, err := seedCompanies(ctx, s)
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	fmt.Printf("seeded %d companies\n", n)
 }
@@ -238,21 +246,21 @@ func crawl(slug string) {
 	defer cancel()
 	s, err := store.Open(ctx, databaseURL())
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	defer s.Close()
 
 	c, err := s.GetCompany(ctx, "greenhouse", slug)
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	jobs, err := fetcher.FetchGreenhouse(ctx, &http.Client{Timeout: 10 * time.Second}, slug)
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	res, err := s.RecordCrawl(ctx, c.ID, jobs)
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	if res.Baseline {
 		fmt.Printf("%s: baseline saved, %d jobs already on the board (no alerts)\n", c.Name, len(res.NewJobIDs))
@@ -269,7 +277,7 @@ func fetchDemo() {
 
 	jobs, err := fetcher.FetchGreenhouse(ctx, client, "stripe")
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 
 	matched := 0
