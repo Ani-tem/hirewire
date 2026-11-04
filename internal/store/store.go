@@ -81,6 +81,18 @@ func (s *Store) GetCompany(ctx context.Context, ats, slug string) (Company, erro
 	return c, nil
 }
 
+// LastCrawlSuccess is when any board was last crawled successfully (zero if never).
+func (s *Store) LastCrawlSuccess(ctx context.Context) (time.Time, error) {
+	var t *time.Time
+	if err := s.pool.QueryRow(ctx, `SELECT max(last_success_at) FROM companies`).Scan(&t); err != nil {
+		return time.Time{}, fmt.Errorf("last crawl success: %w", err)
+	}
+	if t == nil {
+		return time.Time{}, nil
+	}
+	return *t, nil
+}
+
 // StoredJob is a job as saved, with its company's name.
 type StoredJob struct {
 	Company  string

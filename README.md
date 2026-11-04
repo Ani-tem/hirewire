@@ -44,6 +44,21 @@ Stripe: 745 jobs on the board, 0 new
 
 Set `DATABASE_URL` to use a different Postgres.
 
+## Deploy
+
+One machine runs Postgres and hirewire with Docker Compose. Nothing listens for
+inbound traffic (the bot long-polls Telegram), so there is no domain, TLS or open port beyond SSH.
+
+```
+cp .env.example .env    # POSTGRES_PASSWORD, TELEGRAM_BOT_TOKEN, HEALTHCHECK_URL
+docker compose -f compose.prod.yml up -d
+```
+
+Every push to `main` runs the tests against Postgres, builds an ARM + x86 image to
+`ghcr.io/ani-tem/hirewire`, and (once `DEPLOY_ENABLED` is set) redeploys over SSH.
+`HEALTHCHECK_URL` gets a ping every 5 minutes while crawls are succeeding, so a
+crash, hang or all-boards-failing crawler raises an alert.
+
 ## Layout
 
 ```
@@ -55,7 +70,7 @@ internal/fetcher/   one client per ATS (Greenhouse, Lever, Ashby, Workday), all 
 internal/match/     keyword and location matching on whole words
 internal/store/     all SQL; schema.sql is embedded into the binary
 internal/telegram/  minimal Bot API client (long polling, sendMessage, 429 retry_after)
-data/companies.csv  the boards we track
+data/companies.csv  the boards we track, compiled into the binary and seeded on start
 docs/design.md      high-level design and decisions
 ```
 

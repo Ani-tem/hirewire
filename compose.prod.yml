@@ -1,0 +1,36 @@
+# Production: Postgres and hirewire on one machine. Secrets come from .env (see .env.example).
+#   docker compose -f compose.prod.yml up -d
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hirewire
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: hirewire
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No ports: only containers on this network can reach the database.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hirewire"]
+      interval: 5s
+      retries: 10
+    logging: &logging
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" } # a small disk must not fill with logs
+
+  hirewire:
+    image: ghcr.io/ani-tem/hirewire:latest
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://hirewire:${POSTGRES_PASSWORD}@postgres:5432/hirewire?sslmode=disable
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN in .env}
+      HEALTHCHECK_URL: ${HEALTHCHECK_URL:-}
+    # SIGTERM, then up to 60s to finish the current boards and sends before a kill.
+    stop_grace_period: 60s
+    logging: *logging
+
+volumes:
+  pgdata:

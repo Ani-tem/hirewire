@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Ani-tem/hirewire/data"
 	"github.com/Ani-tem/hirewire/internal/bot"
 	"github.com/Ani-tem/hirewire/internal/crawler"
 	"github.com/Ani-tem/hirewire/internal/fetcher"
@@ -35,6 +36,9 @@ const usage = `usage: hirewire <command>
   fetch  print Stripe's engineering roles (smoke test, no database)`
 
 func main() {
+	if os.Getenv("LOG_FORMAT") == "json" { // in production, one JSON object per line for log tools
+		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	}
 	if len(os.Args) < 2 {
 		fmt.Println(usage)
 		os.Exit(2)
@@ -77,6 +81,11 @@ func run() {
 		log.Fatal(err)
 	}
 	defer s.Close()
+	n, err := seedCompanies(ctx, s)
+	if err != nil {
+		log.Fatal(err)
+	}
+	slog.Info("companies seeded", "count", n)
 
 	const workers = 8
 	// Every Greenhouse board is on one host. Go's default keeps only 2 idle
@@ -96,6 +105,9 @@ func run() {
 		wg.Go(func() { notifier.New(s, tg, slog.Default()).Run(ctx) })
 	} else {
 		slog.Warn("TELEGRAM_BOT_TOKEN not set: crawling only, no bot and no alerts")
+	}
+	if url := os.Getenv("HEALTHCHECK_URL"); url != "" {
+		wg.Go(func() { heartbeat(ctx, s, url) })
 	}
 
 	slog.Info("hirewire running, Ctrl-C to stop", "workers", workers)
@@ -150,24 +162,54 @@ func seed() {
 		log.Fatal(err)
 	}
 	defer s.Close()
-
-	f, err := os.Open("data/companies.csv")
+	n, err := seedCompanies(ctx, s)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer f.Close()
-	rows, err := csv.NewReader(f).ReadAll()
-	if err != nil {
-		log.Fatal(err)
-	}
+	fmt.Printf("seeded %d companies\n", n)
+}
 
+// seedCompanies adds every company in the embedded companies.csv. AddCompany is
+// an upsert, so this is safe on every start and picks up companies added since.
+func seedCompanies(ctx context.Context, s *store.Store) (int, error) {
+	rows, err := csv.NewReader(strings.NewReader(data.CompaniesCSV)).ReadAll()
+	if err != nil {
+		return 0, fmt.Errorf("read companies.csv: %w", err)
+	}
 	for _, r := range rows[1:] { // skip the header row
-		name, ats, slug := r[0], r[1], r[2]
-		if err := s.AddCompany(ctx, name, ats, slug); err != nil {
-			log.Fatalf("%s: %v", name, err)
+		if err := s.AddCompany(ctx, r[0], r[1], r[2]); err != nil {
+			return 0, err
 		}
 	}
-	fmt.Printf("seeded %d companies\n", len(rows)-1)
+	return len(rows) - 1, nil
+}
+
+// heartbeat pings url every few minutes while crawls are succeeding. The
+// monitor (healthchecks.io) emails us when pings stop: that catches a crash,
+// a hang and a crawler that runs but fails every board, which a plain
+// "process is up" check would miss.
+func heartbeat(ctx context.Context, s *store.Store, url string) {
+	const every, stale = 5 * time.Minute, 30 * time.Minute
+	client := &http.Client{Timeout: 10 * time.Second}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		last, err := s.LastCrawlSuccess(ctx)
+		if err != nil || time.Since(last) > stale {
+			slog.Warn("no successful crawl recently, skipping heartbeat", "last", last, "err", err)
+			continue
+		}
+		if resp, err := client.Get(url); err != nil {
+			slog.Warn("heartbeat failed", "err", err)
+		} else {
+			resp.Body.Close()
+		}
+	}
 }
 
 func crawl(slug string) {
