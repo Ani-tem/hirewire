@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -18,14 +19,15 @@ import (
 	"github.com/Ani-tem/hirewire/internal/crawler"
 	"github.com/Ani-tem/hirewire/internal/fetcher"
 	"github.com/Ani-tem/hirewire/internal/match"
+	"github.com/Ani-tem/hirewire/internal/notifier"
 	"github.com/Ani-tem/hirewire/internal/store"
 	"github.com/Ani-tem/hirewire/internal/telegram"
 )
 
 const usage = `usage: hirewire <command>
 
-  run           crawl every company on schedule until Ctrl-C
-  bot           answer Telegram commands until Ctrl-C (needs TELEGRAM_BOT_TOKEN)
+  run           crawl on schedule, answer the bot and send alerts until Ctrl-C
+                (without TELEGRAM_BOT_TOKEN it only crawls)
   seed          add every company in data/companies.csv to the database
   try [flags]   show which stored jobs a subscription would match, e.g.
                 try -include "backend,sde" -exclude "senior,staff" -location "bengaluru,remote"
@@ -40,8 +42,6 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		run()
-	case "bot":
-		runBot()
 	case "seed":
 		seed()
 	case "try":
@@ -68,7 +68,7 @@ func databaseURL() string {
 }
 
 func run() {
-	// Ctrl-C (or SIGTERM from a deploy) cancels ctx, and the crawler stops after its current board.
+	// Ctrl-C (or SIGTERM from a deploy) cancels ctx; each part finishes what it is doing and returns.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -85,31 +85,21 @@ func run() {
 	transport.MaxIdleConnsPerHost = workers
 	client := &http.Client{Timeout: 90 * time.Second, Transport: transport} // backstop above the crawler's per-board timeout
 
-	c := crawler.New(s, client, workers, slog.Default())
+	// One process, three loops sharing ctx: simple to deploy, and they only talk through Postgres.
+	var wg sync.WaitGroup
+	wg.Go(func() { crawler.New(s, client, workers, slog.Default()).Run(ctx) })
+
+	if token := os.Getenv("TELEGRAM_BOT_TOKEN"); token != "" {
+		// The timeout must outlast a long poll, which Telegram holds open for up to 30s.
+		tg := telegram.New(token, &http.Client{Timeout: 60 * time.Second})
+		wg.Go(func() { (&bot.Bot{Store: s, TG: tg, Log: slog.Default()}).Run(ctx) })
+		wg.Go(func() { notifier.New(s, tg, slog.Default()).Run(ctx) })
+	} else {
+		slog.Warn("TELEGRAM_BOT_TOKEN not set: crawling only, no bot and no alerts")
+	}
+
 	slog.Info("hirewire running, Ctrl-C to stop", "workers", workers)
-	c.Run(ctx)
-	slog.Info("stopped")
-}
-
-func runBot() {
-	token := os.Getenv("TELEGRAM_BOT_TOKEN")
-	if token == "" {
-		log.Fatal("set TELEGRAM_BOT_TOKEN (from @BotFather)")
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	s, err := store.Open(ctx, databaseURL())
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer s.Close()
-
-	// The timeout must outlast a long poll, which Telegram holds open for up to 30s.
-	tg := telegram.New(token, &http.Client{Timeout: 60 * time.Second})
-	b := &bot.Bot{Store: s, TG: tg, Log: slog.Default()}
-	slog.Info("bot running, Ctrl-C to stop")
-	b.Run(ctx)
+	wg.Wait()
 	slog.Info("stopped")
 }
 
