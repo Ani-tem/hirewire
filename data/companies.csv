@@ -169,3 +169,17 @@ LlamaIndex,ashby,llamaindex
 Mux,ashby,mux
 Weaviate,ashby,weaviate
 Hightouch,ashby,hightouch
+NVIDIA,workday,nvidia.wd5/NVIDIAExternalCareerSite
+Adobe,workday,adobe.wd5/external_experienced
+Salesforce,workday,salesforce.wd12/External_Career_Site
+Intel,workday,intel.wd1/External
+PayPal,workday,paypal.wd1/jobs
+Mastercard,workday,mastercard.wd1/CorporateCareers
+HP,workday,hp.wd5/ExternalCareerSite
+CrowdStrike,workday,crowdstrike.wd5/crowdstrikecareers
+Workday,workday,workday.wd5/Workday
+Broadcom,workday,broadcom.wd1/External_Career
+Red Hat,workday,redhat.wd5/jobs
+Zillow,workday,zillow.wd5/Zillow_Group_External
+Sprinklr,workday,sprinklr.wd1/careers
+Analog Devices,workday,analogdevices.wd1/External

@@ -2,7 +2,7 @@
 
 Get a Telegram alert the moment a company you care about posts a job that matches you.
 
-hirewire polls the public job-board APIs that companies use (Greenhouse, Lever and Ashby, covering 170 companies including CRED, Meesho, Paytm, Sarvam AI, Stripe and OpenAI), works out which postings are new, and alerts every user whose filters match. It is written in Go and runs as a single binary backed by PostgreSQL.
+hirewire polls the public job-board APIs that companies use (Greenhouse, Lever, Ashby and Workday, covering 184 companies including CRED, Meesho, Paytm, Sarvam AI, Stripe, OpenAI, NVIDIA and Salesforce), works out which postings are new, and alerts every user whose filters match. It is written in Go and runs as a single binary backed by PostgreSQL.
 
 > **Status:** in progress. Fetching, company seeding, new-job detection, the first-crawl baseline, scheduled concurrent crawling and keyword matching work. The outbox and Telegram delivery are next. See the [roadmap](#roadmap).
 
@@ -51,7 +51,7 @@ cmd/hirewire/       CLI entry point (run, seed, try, crawl, fetch)
 internal/bot/       Telegram commands: /subscribe, /list, /unsubscribe, /stop
 internal/crawler/   dispatcher + worker pool: claim due boards, crawl in parallel, record
 internal/notifier/  drain the outbox: claim pending alerts, one message per chat, rate limit, retry
-internal/fetcher/   one client per ATS (Greenhouse, Lever, Ashby), all returning the same Job type
+internal/fetcher/   one client per ATS (Greenhouse, Lever, Ashby, Workday), all returning the same Job type
 internal/match/     keyword and location matching on whole words
 internal/store/     all SQL; schema.sql is embedded into the binary
 internal/telegram/  minimal Bot API client (long polling, sendMessage, 429 retry_after)
@@ -72,4 +72,5 @@ docs/design.md      high-level design and decisions
 - [x] Transactional outbox: notifications queued in the same transaction as the jobs
 - [x] Telegram bot: subscribe, list, unsubscribe, stop
 - [x] Rate-limited notifier with retries
+- [x] Workday fetcher (newest 100 per board, multi-location jobs resolved and cached)
 - [ ] Deploy, then real users
