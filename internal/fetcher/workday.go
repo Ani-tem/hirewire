@@ -74,6 +74,10 @@ func FetchWorkday(ctx context.Context, client *http.Client, board string) ([]Job
 			return nil, fmt.Errorf("workday %s: %w", board, err)
 		}
 		for _, p := range body.JobPostings {
+			// Found on real data: Workday sometimes lists an empty entry with no path or title.
+			if p.ExternalPath == "" || p.Title == "" {
+				continue
+			}
 			// A job posted between two page requests shifts the list, so one can appear twice.
 			if seen[p.ExternalPath] {
 				continue

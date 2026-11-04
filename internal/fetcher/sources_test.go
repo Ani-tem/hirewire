@@ -151,3 +151,32 @@ func TestFetchWorkdayRejectsBadBoard(t *testing.T) {
 		t.Error("want an error for a board without a site")
 	}
 }
+
+func TestFetchWorkdaySkipsEmptyEntries(t *testing.T) {
+	srv := fakeBoardMethod(t, http.MethodPost, "/wday/cxs/acme/External/jobs", `{"jobPostings":[
+		{"title":"","externalPath":"","locationsText":""},
+		{"title":"SDE","externalPath":"/job/x/SDE_1","locationsText":"India, Pune"}]}`)
+	workdayOrigin = func(string) string { return srv.URL }
+
+	jobs, err := FetchWorkday(context.Background(), srv.Client(), "acme.wd5/External")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Title != "SDE" {
+		t.Errorf("got %+v, want only the real job", jobs)
+	}
+}
+
+// fakeBoardMethod serves body for method + path and 404s everything else.
+func fakeBoardMethod(t *testing.T, method, path, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != method || r.URL.Path != path {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
