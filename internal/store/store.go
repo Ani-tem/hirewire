@@ -93,6 +93,15 @@ func (s *Store) LastCrawlSuccess(ctx context.Context) (time.Time, error) {
 	return *t, nil
 }
 
+// CountCompanies returns how many boards we watch.
+func (s *Store) CountCompanies(ctx context.Context) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM companies WHERE enabled`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count companies: %w", err)
+	}
+	return n, nil
+}
+
 // StoredJob is a job as saved, with its company's name.
 type StoredJob struct {
 	Company  string
@@ -101,12 +110,14 @@ type StoredJob struct {
 	URL      string
 }
 
-// ListJobs returns every stored job, newest first.
-func (s *Store) ListJobs(ctx context.Context) ([]StoredJob, error) {
+// ListJobs returns the jobs first seen at or after since, newest first.
+// The zero time means all of them.
+func (s *Store) ListJobs(ctx context.Context, since time.Time) ([]StoredJob, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT c.name, j.title, j.location, j.url
 		FROM jobs j JOIN companies c ON c.id = j.company_id
-		ORDER BY j.first_seen_at DESC, j.id DESC`)
+		WHERE j.first_seen_at >= $1
+		ORDER BY j.first_seen_at DESC, j.id DESC`, since)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}

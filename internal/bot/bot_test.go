@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Ani-tem/hirewire/internal/match"
 	"github.com/Ani-tem/hirewire/internal/store"
@@ -56,6 +57,7 @@ func TestFormatFilterRoundTrips(t *testing.T) {
 type fakeStore struct {
 	users  map[int64]bool // chat ID -> active
 	subs   []store.Subscription
+	jobs   []store.StoredJob
 	nextID int64
 }
 
@@ -92,44 +94,96 @@ func (f *fakeStore) DeleteSubscription(_ context.Context, user, id int64) (bool,
 	return len(f.subs) < n, nil
 }
 
+func (f *fakeStore) ListJobs(context.Context, time.Time) ([]store.StoredJob, error) {
+	return f.jobs, nil
+}
+func (f *fakeStore) CountCompanies(context.Context) (int, error) { return 185, nil }
+
+func newBot() (*Bot, *fakeStore) {
+	fs := &fakeStore{users: map[int64]bool{}, jobs: []store.StoredJob{
+		{Company: "FamPay", Title: "SDE 2 Infra", Location: "Bengaluru", URL: "https://x/1"},
+		{Company: "GitLab", Title: "Intermediate Backend Engineer", Location: "Bangalore, India", URL: "https://x/2"},
+		{Company: "Stripe", Title: "Senior Backend Engineer", Location: "Bengaluru", URL: "https://x/3"},
+		{Company: "Figma", Title: "Product Designer", Location: "San Francisco", URL: "https://x/4"},
+	}}
+	return &Bot{Store: fs, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}, fs
+}
+
 func TestConversation(t *testing.T) {
-	fs := &fakeStore{users: map[int64]bool{}}
-	b := &Bot{Store: fs, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	b, fs := newBot()
 	ctx := context.Background()
 	const ravi, priya = 1, 2
 
-	// Each step: who says what, and a piece of the reply we expect.
+	// Each step: who says what, and pieces of the reply we expect.
 	steps := []struct {
-		chat      int64
-		say, want string
+		chat int64
+		say  string
+		want []string
 	}{
-		{ravi, "/start", "/subscribe backend"},
-		{ravi, "/list", "No subscriptions yet"},
-		{ravi, "/subscribe", "at least one word"},
-		{ravi, "/subscribe backend, -senior, @bengaluru", "Subscribed (1): backend, -senior, @bengaluru"},
-		{ravi, "/subscribe@hirewire_bot sde", "Subscribed (2): sde"},
-		{ravi, "/list", "1: backend, -senior, @bengaluru\n2: sde"},
-		{priya, "/unsubscribe 1", "You have no subscription 1"}, // not hers
-		{ravi, "/unsubscribe one", "followed by a number"},
-		{ravi, "/unsubscribe 1", "Removed subscription 1"},
-		{ravi, "/list", "2: sde"},
-		{ravi, "/stop", "Alerts paused"},
-		{ravi, "hello", "I don't know that one"},
+		{ravi, "/start", []string{"185 tech companies", "<code>/subscribe backend, sde, -senior, @bengaluru</code>"}},
+		{ravi, "hi there", []string{"I only understand commands", "/help"}},
+		{ravi, "/list", []string{"no alerts yet"}},
+		{ravi, "/subscribe", []string{"Tell me what to look for"}},
+		{ravi, "/subscribe -senior, @bengaluru", []string{"at least one word the job title must contain"}},
+		{ravi, "/subscribe backend, sde, -senior, @bengaluru", []string{
+			"Alert #1 saved",
+			"Title has: <b>backend</b> or <b>sde</b>",
+			"But not: <b>senior</b>",
+			"Location: <b>bengaluru</b>",
+			"<b>2 jobs</b> matched", // FamPay and GitLab; Stripe's is senior, Figma's is design
+			`<a href="https://x/1">SDE 2 Infra</a> at FamPay`,
+		}},
+		{ravi, "/subscribe@AniHire_bot quantum chef", []string{"Alert #2 saved", "Location: anywhere", "No jobs matched"}},
+		{ravi, "/list", []string{"<b>#1</b>", "Remove: /unsubscribe 1", "<code>/subscribe backend, sde, -senior, @bengaluru</code>"}},
+		{priya, "/unsubscribe 1", []string{"You don't have an alert #1"}}, // not hers
+		{ravi, "/unsubscribe one", []string{"Which alert?"}},
+		{ravi, "/unsubscribe #1", []string{"Alert #1 removed"}},
+		{ravi, "/pause", []string{"Alerts paused"}},
+		{ravi, "/resume", []string{"Alerts are on"}},
+		{ravi, "/frobnicate", []string{"I don't know <code>/frobnicate</code>", "How to set up an alert"}},
 	}
 	for _, s := range steps {
-		if got := b.handle(ctx, s.chat, s.say); !strings.Contains(got, s.want) {
-			t.Errorf("%d says %q: got %q, want it to contain %q", s.chat, s.say, got, s.want)
+		got := b.handle(ctx, s.chat, s.say)
+		for _, w := range s.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%d says %q: reply missing %q\n--- reply ---\n%s", s.chat, s.say, w, got)
+			}
 		}
 	}
-	// Any message after /stop counts as coming back.
 	if !fs.users[ravi] {
-		t.Error("ravi wrote after /stop but is still inactive")
+		t.Error("ravi sent /resume but is still inactive")
+	}
+}
+
+// Whatever a user types is echoed back inside Telegram HTML; unescaped, a "<"
+// would make Telegram reject the reply, and a crafted tag could fake a link.
+func TestUserTextIsEscaped(t *testing.T) {
+	b, _ := newBot()
+	tests := []struct{ say, want, never string }{
+		{"/subscribe <u>go</u> & rust, @<i>pune</i>", "&lt;u&gt;go&lt;/u&gt; &amp; rust", "<u>"},
+		{"/subscribe <u>go</u> & rust, @<i>pune</i>", "&lt;i&gt;pune&lt;/i&gt;", "<i>pune"},
+		{"/<script>", "&lt;script&gt;", "<script>"},
+	}
+	for _, tt := range tests {
+		got := b.handle(context.Background(), 1, tt.say)
+		if !strings.Contains(got, tt.want) || strings.Contains(got, tt.never) {
+			t.Errorf("%q: want %q and never %q in reply:\n%s", tt.say, tt.want, tt.never, got)
+		}
+	}
+}
+
+func TestPreviewWarnsWhenTooBroad(t *testing.T) {
+	var jobs []store.StoredJob
+	for range tooMany + 1 {
+		jobs = append(jobs, store.StoredJob{Company: "Acme", Title: "Engineer", URL: "https://x"})
+	}
+	if got := preview(match.Filter{Include: []string{"engineer"}}, jobs); !strings.Contains(got, "That's a lot") {
+		t.Errorf("no narrowing hint for %d matches:\n%s", len(jobs), got)
 	}
 }
 
 func TestSubscriptionLimit(t *testing.T) {
-	fs := &fakeStore{users: map[int64]bool{}}
-	b := &Bot{Store: fs, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	b, _ := newBot()
 	for range maxSubscriptions {
 		b.handle(context.Background(), 1, "/subscribe backend")
 	}

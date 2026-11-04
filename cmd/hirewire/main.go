@@ -139,7 +139,7 @@ func try(args []string) {
 		fatal(err)
 	}
 	defer s.Close()
-	jobs, err := s.ListJobs(ctx)
+	jobs, err := s.ListJobs(ctx, time.Time{})
 	if err != nil {
 		fatal(err)
 	}
