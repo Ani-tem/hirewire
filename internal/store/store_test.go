@@ -293,3 +293,37 @@ func TestRecordCrawlQueuesNotifications(t *testing.T) {
 		t.Errorf("pending notifications = %v, want %v", got, want)
 	}
 }
+
+func TestSubscriptionsBelongToTheirUser(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	reset(t, s)
+	t.Cleanup(func() { reset(t, s) })
+
+	ravi, err := s.AddUser(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priya, err := s.AddUser(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := s.AddSubscription(ctx, ravi, match.Filter{Include: []string{"backend"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if ok, err := s.DeleteSubscription(ctx, priya, sub); err != nil || ok {
+		t.Errorf("priya deleted ravi's subscription: ok=%v err=%v", ok, err)
+	}
+	subs, err := s.ListSubscriptions(ctx, ravi)
+	if err != nil || len(subs) != 1 || !slices.Equal(subs[0].IncludeKeywords, []string{"backend"}) {
+		t.Fatalf("ravi's subscriptions = %+v, %v; want his one backend subscription", subs, err)
+	}
+	if len(subs[0].ExcludeKeywords) != 0 || subs[0].ExcludeKeywords == nil {
+		t.Errorf("unset excludes = %#v, want an empty array, not NULL", subs[0].ExcludeKeywords)
+	}
+	if ok, err := s.DeleteSubscription(ctx, ravi, sub); err != nil || !ok {
+		t.Errorf("ravi could not delete his own subscription: ok=%v err=%v", ok, err)
+	}
+}

@@ -174,6 +174,41 @@ func (s *Store) AddSubscription(ctx context.Context, userID int64, f match.Filte
 	return id, nil
 }
 
+// DeactivateUser stops all alerts to a chat; subscriptions are kept for when they come back.
+func (s *Store) DeactivateUser(ctx context.Context, telegramChatID int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE users SET active = false WHERE telegram_chat_id = $1`, telegramChatID)
+	if err != nil {
+		return fmt.Errorf("deactivate user %d: %w", telegramChatID, err)
+	}
+	return nil
+}
+
+// ListSubscriptions returns a user's subscriptions, oldest first.
+func (s *Store) ListSubscriptions(ctx context.Context, userID int64) ([]Subscription, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, user_id, include_keywords, exclude_keywords, locations
+		FROM subscriptions WHERE user_id = $1 ORDER BY id`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list subscriptions for user %d: %w", userID, err)
+	}
+	subs, err := pgx.CollectRows(rows, pgx.RowToStructByPos[Subscription])
+	if err != nil {
+		return nil, fmt.Errorf("list subscriptions for user %d: %w", userID, err)
+	}
+	return subs, nil
+}
+
+// DeleteSubscription removes one of a user's subscriptions and reports whether it existed.
+func (s *Store) DeleteSubscription(ctx context.Context, userID, subscriptionID int64) (bool, error) {
+	// Checking user_id too means guessing another user's subscription ID deletes nothing.
+	tag, err := s.pool.Exec(ctx, `DELETE FROM subscriptions WHERE id = $1 AND user_id = $2`,
+		subscriptionID, userID)
+	if err != nil {
+		return false, fmt.Errorf("delete subscription %d: %w", subscriptionID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // CrawlResult is what one crawl of a board changed.
 type CrawlResult struct {
 	NewJobIDs []int64 // jobs we had never seen before

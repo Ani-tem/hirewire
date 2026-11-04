@@ -33,6 +33,7 @@ go test ./...                       # store tests need the database running
 go run ./cmd/hirewire seed          # load data/companies.csv
 go run ./cmd/hirewire crawl stripe  # fetch a board and report new jobs
 go run ./cmd/hirewire run           # crawl every company on schedule until Ctrl-C
+TELEGRAM_BOT_TOKEN=... go run ./cmd/hirewire bot   # answer /subscribe, /list, /unsubscribe, /stop
 go run ./cmd/hirewire try -include "backend,sde" -exclude "senior,staff" -location "bengaluru,remote india"
                                     # which stored jobs would this subscription get?
 ```
@@ -47,11 +48,13 @@ Set `DATABASE_URL` to use a different Postgres.
 ## Layout
 
 ```
-cmd/hirewire/       CLI entry point (run, seed, crawl, fetch)
+cmd/hirewire/       CLI entry point (run, bot, seed, try, crawl, fetch)
+internal/bot/       Telegram commands: /subscribe, /list, /unsubscribe, /stop
 internal/crawler/   dispatcher + worker pool: claim due boards, crawl in parallel, record
 internal/fetcher/   one client per ATS (Greenhouse, Lever, Ashby), all returning the same Job type
 internal/match/     keyword and location matching on whole words
 internal/store/     all SQL; schema.sql is embedded into the binary
+internal/telegram/  minimal Bot API client (long polling, sendMessage, 429 retry_after)
 data/companies.csv  the boards we track
 docs/design.md      high-level design and decisions
 ```
@@ -67,5 +70,6 @@ docs/design.md      high-level design and decisions
 - [x] Lever and Ashby fetchers (more Indian companies)
 - [x] Keyword and location matching
 - [x] Transactional outbox: notifications queued in the same transaction as the jobs
-- [ ] Telegram bot and rate-limited notifier with retries
+- [x] Telegram bot: subscribe, list, unsubscribe, stop
+- [ ] Rate-limited notifier with retries
 - [ ] Deploy, then real users

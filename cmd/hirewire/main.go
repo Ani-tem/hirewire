@@ -14,15 +14,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Ani-tem/hirewire/internal/bot"
 	"github.com/Ani-tem/hirewire/internal/crawler"
 	"github.com/Ani-tem/hirewire/internal/fetcher"
 	"github.com/Ani-tem/hirewire/internal/match"
 	"github.com/Ani-tem/hirewire/internal/store"
+	"github.com/Ani-tem/hirewire/internal/telegram"
 )
 
 const usage = `usage: hirewire <command>
 
   run           crawl every company on schedule until Ctrl-C
+  bot           answer Telegram commands until Ctrl-C (needs TELEGRAM_BOT_TOKEN)
   seed          add every company in data/companies.csv to the database
   try [flags]   show which stored jobs a subscription would match, e.g.
                 try -include "backend,sde" -exclude "senior,staff" -location "bengaluru,remote"
@@ -37,6 +40,8 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		run()
+	case "bot":
+		runBot()
 	case "seed":
 		seed()
 	case "try":
@@ -83,6 +88,28 @@ func run() {
 	c := crawler.New(s, client, workers, slog.Default())
 	slog.Info("hirewire running, Ctrl-C to stop", "workers", workers)
 	c.Run(ctx)
+	slog.Info("stopped")
+}
+
+func runBot() {
+	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	if token == "" {
+		log.Fatal("set TELEGRAM_BOT_TOKEN (from @BotFather)")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	s, err := store.Open(ctx, databaseURL())
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer s.Close()
+
+	// The timeout must outlast a long poll, which Telegram holds open for up to 30s.
+	tg := telegram.New(token, &http.Client{Timeout: 60 * time.Second})
+	b := &bot.Bot{Store: s, TG: tg, Log: slog.Default()}
+	slog.Info("bot running, Ctrl-C to stop")
+	b.Run(ctx)
 	slog.Info("stopped")
 }
 
