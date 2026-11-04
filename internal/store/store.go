@@ -341,3 +341,79 @@ func queueNotifications(ctx context.Context, tx pgx.Tx, jobs []newJob) (int, err
 	}
 	return int(tag.RowsAffected()), nil
 }
+
+// Notification is a pending alert with everything needed to write the message.
+type Notification struct {
+	ID       int64
+	ChatID   int64
+	Attempts int
+	Company  string
+	Title    string
+	Location string
+	URL      string
+}
+
+// ClaimNotifications hands out up to limit pending notifications that are due,
+// leasing them like ClaimDueCompanies: if the notifier dies mid-send they come
+// back after lease, so a message can be sent twice but is never dropped.
+func (s *Store) ClaimNotifications(ctx context.Context, limit int, lease time.Duration) ([]Notification, error) {
+	// OF n2: lock only the notification rows, not the users and jobs joined to them.
+	rows, err := s.pool.Query(ctx, `
+		UPDATE notifications n SET next_attempt_at = now() + make_interval(secs => $2)
+		FROM users u, jobs j, companies c
+		WHERE n.id IN (
+			SELECT n2.id FROM notifications n2 JOIN users u2 ON u2.id = n2.user_id
+			WHERE n2.status = 'pending' AND n2.next_attempt_at <= now() AND u2.active
+			ORDER BY n2.next_attempt_at
+			LIMIT $1
+			FOR UPDATE OF n2 SKIP LOCKED)
+		AND u.id = n.user_id AND j.id = n.job_id AND c.id = j.company_id
+		RETURNING n.id, u.telegram_chat_id, n.attempts, c.name, j.title, j.location, j.url`,
+		limit, lease.Seconds())
+	if err != nil {
+		return nil, fmt.Errorf("claim notifications: %w", err)
+	}
+	ns, err := pgx.CollectRows(rows, pgx.RowToStructByPos[Notification])
+	if err != nil {
+		return nil, fmt.Errorf("claim notifications: %w", err)
+	}
+	return ns, nil
+}
+
+// MarkSent records that these notifications were delivered.
+func (s *Store) MarkSent(ctx context.Context, ids []int64) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE notifications SET status = 'sent', sent_at = now(), attempts = attempts + 1
+		WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return fmt.Errorf("mark %d notifications sent: %w", len(ids), err)
+	}
+	return nil
+}
+
+// RetryNotifications counts a failed attempt and tries again after delay,
+// or gives up (status 'failed') once maxAttempts attempts have been made.
+func (s *Store) RetryNotifications(ctx context.Context, ids []int64, delay time.Duration, maxAttempts int, reason string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE notifications SET
+			attempts = attempts + 1,
+			last_error = $3,
+			status = CASE WHEN attempts + 1 >= $4 THEN 'failed' ELSE 'pending' END,
+			next_attempt_at = now() + make_interval(secs => $2)
+		WHERE id = ANY($1)`, ids, delay.Seconds(), reason, maxAttempts)
+	if err != nil {
+		return fmt.Errorf("retry %d notifications: %w", len(ids), err)
+	}
+	return nil
+}
+
+// FailNotifications gives up on these notifications for good, e.g. the user blocked the bot.
+func (s *Store) FailNotifications(ctx context.Context, ids []int64, reason string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE notifications SET status = 'failed', attempts = attempts + 1, last_error = $2
+		WHERE id = ANY($1)`, ids, reason)
+	if err != nil {
+		return fmt.Errorf("fail %d notifications: %w", len(ids), err)
+	}
+	return nil
+}

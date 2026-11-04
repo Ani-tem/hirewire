@@ -327,3 +327,70 @@ func TestSubscriptionsBelongToTheirUser(t *testing.T) {
 		t.Errorf("ravi could not delete his own subscription: ok=%v err=%v", ok, err)
 	}
 }
+
+func TestNotificationLifecycle(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	reset(t, s)
+	t.Cleanup(func() { reset(t, s) })
+
+	if err := s.AddCompany(ctx, "Razorpay", "greenhouse", "razorpay"); err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.GetCompany(ctx, "greenhouse", "razorpay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ravi, _ := s.AddUser(ctx, 100)
+	priya, _ := s.AddUser(ctx, 200)
+	for _, u := range []int64{ravi, priya} {
+		if _, err := s.AddSubscription(ctx, u, match.Filter{Include: []string{"backend"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.RecordCrawl(ctx, c.ID, nil) // baseline: empty board
+	board := []fetcher.Job{{ID: "1", Title: "Backend Engineer", Location: "Bengaluru", URL: "https://x/1"}}
+	if res, err := s.RecordCrawl(ctx, c.ID, board); err != nil || res.Notified != 2 {
+		t.Fatalf("queued %d, %v; want 2", res.Notified, err)
+	}
+	if err := s.DeactivateUser(ctx, 200); err != nil { // priya pauses alerts
+		t.Fatal(err)
+	}
+
+	claim := func() []Notification {
+		t.Helper()
+		ns, err := s.ClaimNotifications(ctx, 10, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ns
+	}
+
+	ns := claim()
+	if len(ns) != 1 || ns[0].ChatID != 100 || ns[0].Company != "Razorpay" || ns[0].URL != "https://x/1" {
+		t.Fatalf("claimed %+v, want only ravi's Razorpay alert", ns)
+	}
+	if again := claim(); len(again) != 0 {
+		t.Errorf("leased notification was handed out again: %+v", again)
+	}
+
+	// A failure makes it due again after the delay; the last allowed attempt gives up.
+	id := []int64{ns[0].ID}
+	if err := s.RetryNotifications(ctx, id, 0, 2, "telegram 502"); err != nil {
+		t.Fatal(err)
+	}
+	if ns := claim(); len(ns) != 1 || ns[0].Attempts != 1 {
+		t.Fatalf("after one failure claimed %+v, want it back with 1 attempt", ns)
+	}
+	if err := s.RetryNotifications(ctx, id, 0, 2, "telegram 502"); err != nil {
+		t.Fatal(err)
+	}
+	if ns := claim(); len(ns) != 0 {
+		t.Errorf("claimed %+v after max attempts, want it given up", ns)
+	}
+	var status string
+	s.pool.QueryRow(ctx, `SELECT status FROM notifications WHERE id = $1`, id[0]).Scan(&status)
+	if status != "failed" {
+		t.Errorf("status = %q, want failed", status)
+	}
+}
