@@ -46,18 +46,23 @@ Set `DATABASE_URL` to use a different Postgres.
 
 ## Deploy
 
-One machine runs Postgres and hirewire with Docker Compose. Nothing listens for
-inbound traffic (the bot long-polls Telegram), so there is no domain, TLS or open port beyond SSH.
+hirewire only makes outbound calls (the bot long-polls Telegram), so it needs no
+domain or TLS. It runs free on **Render** (app) + **Supabase** (Postgres):
 
-```
-cp .env.example .env    # POSTGRES_PASSWORD, TELEGRAM_BOT_TOKEN, HEALTHCHECK_URL
-docker compose -f compose.prod.yml up -d
-```
+1. Supabase: create a project, copy the **Session pooler** connection string
+   (IPv4, and keeps prepared statements working; the transaction pooler doesn't).
+2. Render: New > Blueprint > this repo. `render.yaml` defines the service; enter
+   `DATABASE_URL`, `TELEGRAM_BOT_TOKEN` and `HEALTHCHECK_URL` when asked.
+3. cron-job.org: GET `https://<service>.onrender.com/healthz` every 10 minutes,
+   because Render sleeps free services after 15 minutes without requests.
 
-Every push to `main` runs the tests against Postgres, builds an ARM + x86 image to
-`ghcr.io/ani-tem/hirewire`, and (once `DEPLOY_ENABLED` is set) redeploys over SSH.
+Every push to `main` runs gofmt, vet and race tests against Postgres and builds an
+ARM + x86 image to `ghcr.io/ani-tem/hirewire`; Render deploys once those checks pass.
 `HEALTHCHECK_URL` gets a ping every 5 minutes while crawls are succeeding, so a
 crash, hang or all-boards-failing crawler raises an alert.
+
+On any machine with Docker instead: `cp .env.example .env`, fill it in, then
+`docker compose -f compose.prod.yml up -d`.
 
 ## Layout
 

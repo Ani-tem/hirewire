@@ -54,26 +54,3 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy:
-    needs: build
-    # Off until the server exists: set the repository variable DEPLOY_ENABLED=true.
-    if: github.event_name == 'push' && vars.DEPLOY_ENABLED == 'true'
-    runs-on: ubuntu-latest
-    concurrency: deploy # never two deploys at once
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          # Pinned host key: refuse to deploy to a machine pretending to be ours.
-          echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
-      - name: Ship compose file and restart
-        env:
-          TARGET: ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}
-        run: |
-          scp compose.prod.yml "$TARGET:hirewire/compose.prod.yml"
-          # up -d stops the old container before starting the new one: two bots
-          # polling Telegram with one token would get 409 Conflict.
-          ssh "$TARGET" 'cd hirewire && docker compose -f compose.prod.yml pull hirewire && docker compose -f compose.prod.yml up -d && docker image prune -f'

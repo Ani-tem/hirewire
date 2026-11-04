@@ -1,0 +1,16 @@
+# Render Blueprint: the hirewire service as code. Secrets are entered in the dashboard (sync: false).
+services:
+  - type: web # a web service, because Render's free plan has no background workers
+    name: hirewire
+    runtime: docker
+    plan: free
+    region: singapore # closest Render region to the Supabase database in Mumbai
+    healthCheckPath: /healthz
+    autoDeployTrigger: checksPass # deploy a commit only after CI passes on it
+    envVars:
+      - key: DATABASE_URL # Supabase *session pooler* URL (IPv4; see README)
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: HEALTHCHECK_URL
+        sync: false

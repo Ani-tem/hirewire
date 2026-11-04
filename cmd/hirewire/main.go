@@ -109,6 +109,9 @@ func run() {
 	if url := os.Getenv("HEALTHCHECK_URL"); url != "" {
 		wg.Go(func() { heartbeat(ctx, s, url) })
 	}
+	if port := os.Getenv("PORT"); port != "" {
+		wg.Go(func() { serveHealth(ctx, port) })
+	}
 
 	slog.Info("hirewire running, Ctrl-C to stop", "workers", workers)
 	wg.Wait()
@@ -182,6 +185,24 @@ func seedCompanies(ctx context.Context, s *store.Store) (int, error) {
 		}
 	}
 	return len(rows) - 1, nil
+}
+
+// serveHealth answers GET /healthz until ctx is cancelled. Hosts like Render
+// need a listening port, and put a free service to sleep after 15 minutes
+// without requests, so an external pinger calling this keeps hirewire awake.
+func serveHealth(ctx context.Context, port string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintln(w, "ok")
+	})
+	srv := &http.Server{Addr: ":" + port, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		<-ctx.Done()
+		srv.Shutdown(context.Background())
+	}()
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		slog.Error("health server", "err", err)
+	}
 }
 
 // heartbeat pings url every few minutes while crawls are succeeding. The
