@@ -50,7 +50,8 @@ hirewire only makes outbound calls (the bot long-polls Telegram), so it needs no
 domain or TLS. It runs free on **Render** (app) + **Supabase** (Postgres):
 
 1. Supabase: create a project, copy the **Session pooler** connection string
-   (IPv4, and keeps prepared statements working; the transaction pooler doesn't).
+   (IPv4, and keeps prepared statements working; the transaction pooler doesn't),
+   and append `?sslmode=require` so the connection can never fall back to plaintext.
 2. Render: New > Blueprint > this repo. `render.yaml` defines the service; enter
    `DATABASE_URL`, `TELEGRAM_BOT_TOKEN` and `HEALTHCHECK_URL` when asked.
 3. cron-job.org: GET `https://<service>.onrender.com/healthz` every 10 minutes,

@@ -4,11 +4,11 @@ services:
     name: hirewire
     runtime: docker
     plan: free
-    region: singapore # closest Render region to the Supabase database in Mumbai
+    region: singapore # closest Render region to the Supabase database (Tokyo)
     healthCheckPath: /healthz
     autoDeployTrigger: checksPass # deploy a commit only after CI passes on it
     envVars:
-      - key: DATABASE_URL # Supabase *session pooler* URL (IPv4; see README)
+      - key: DATABASE_URL # Supabase session pooler URL ending in ?sslmode=require (see README)
         sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
