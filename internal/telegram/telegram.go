@@ -58,13 +58,48 @@ func (c *Client) Updates(ctx context.Context, offset int64, wait time.Duration) 
 	return ups, err
 }
 
-// Send posts a plain-text message to a chat.
-func (c *Client) Send(ctx context.Context, chatID int64, text string) error {
-	return c.call(ctx, "sendMessage", map[string]any{
+// Button opens URL when tapped. It is shown under the message.
+type Button struct {
+	Text string
+	URL  string
+}
+
+// Send posts a message to a chat, one button per row under it. text is Telegram
+// HTML (<b>, <i>, <code>, <a href>): anything from outside, like a job title,
+// must go through html.EscapeString first, or Telegram rejects the whole message.
+func (c *Client) Send(ctx context.Context, chatID int64, text string, buttons ...Button) error {
+	params := map[string]any{
 		"chat_id":              chatID,
 		"text":                 text,
+		"parse_mode":           "HTML",
 		"link_preview_options": map[string]bool{"is_disabled": true},
-	}, nil)
+	}
+	if len(buttons) > 0 {
+		rows := make([][]map[string]string, len(buttons))
+		for i, b := range buttons {
+			rows[i] = []map[string]string{{"text": b.Text, "url": b.URL}}
+		}
+		params["reply_markup"] = map[string]any{"inline_keyboard": rows}
+	}
+	return c.call(ctx, "sendMessage", params, nil)
+}
+
+// Command is one entry in the menu Telegram shows when a user types "/".
+type Command struct {
+	Name        string `json:"command"`
+	Description string `json:"description"`
+}
+
+// SetProfile sets the bot's command menu, its description (shown in an empty
+// chat, before the user has sent anything) and its short description (shown on its profile).
+func (c *Client) SetProfile(ctx context.Context, commands []Command, description, short string) error {
+	if err := c.call(ctx, "setMyCommands", map[string]any{"commands": commands}, nil); err != nil {
+		return err
+	}
+	if err := c.call(ctx, "setMyDescription", map[string]any{"description": description}, nil); err != nil {
+		return err
+	}
+	return c.call(ctx, "setMyShortDescription", map[string]any{"short_description": short}, nil)
 }
 
 func (c *Client) call(ctx context.Context, method string, params, result any) error {

@@ -49,7 +49,7 @@ type fakeTG struct {
 	texts map[int64][]string
 }
 
-func (f *fakeTG) Send(_ context.Context, chat int64, text string) error {
+func (f *fakeTG) Send(_ context.Context, chat int64, text string, _ ...telegram.Button) error {
 	f.texts[chat] = append(f.texts[chat], text)
 	return f.errs[chat]
 }
@@ -76,7 +76,7 @@ func TestDeliver(t *testing.T) {
 		t.Errorf("after a 429 the next send may start in %v, want about 7s", d)
 	}
 
-	if len(tg.texts[ok]) != 1 || !strings.HasPrefix(tg.texts[ok][0], "2 new jobs") {
+	if len(tg.texts[ok]) != 1 || !strings.Contains(tg.texts[ok][0], "2 new jobs") {
 		t.Errorf("chat %d got %q, want one message with both jobs", ok, tg.texts[ok])
 	}
 	if !equal(fs.sent, 10, 11) {
@@ -131,4 +131,20 @@ func equal(got []int64, want ...int64) bool {
 		}
 	}
 	return true
+}
+
+func TestFormatEscapesAndAddsButtons(t *testing.T) {
+	text, buttons := format([]store.Notification{
+		{Company: "AT&T", Title: "Engineer <Platform>", Location: "Bengaluru", URL: "https://x/1"},
+		{Company: "Acme", Title: "SDE", URL: "not a url"},
+	})
+	if strings.Contains(text, "<Platform>") || !strings.Contains(text, "Engineer &lt;Platform&gt;") || !strings.Contains(text, "AT&amp;T") {
+		t.Errorf("job text not escaped:\n%s", text)
+	}
+	if len(buttons) != 1 || buttons[0].URL != "https://x/1" || buttons[0].Text != "1. Apply at AT&T" {
+		t.Errorf("buttons = %+v, want one Apply button for the job with a real URL", buttons)
+	}
+	if !strings.Contains(text, "not a url") {
+		t.Errorf("job without a usable URL should show it as text:\n%s", text)
+	}
 }

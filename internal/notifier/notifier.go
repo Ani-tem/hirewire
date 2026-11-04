@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"slices"
 	"strings"
@@ -36,7 +37,7 @@ type Store interface {
 
 // Sender sends one message to a chat. *telegram.Client satisfies it.
 type Sender interface {
-	Send(ctx context.Context, chatID int64, text string) error
+	Send(ctx context.Context, chatID int64, text string, buttons ...telegram.Button) error
 }
 
 type Notifier struct {
@@ -93,7 +94,8 @@ func (n *Notifier) deliver(ctx context.Context, ns []store.Notification) {
 			ids[i] = it.ID
 		}
 
-		err := n.TG.Send(ctx, m.chat, format(m.items))
+		text, buttons := format(m.items)
+		err := n.TG.Send(ctx, m.chat, text, buttons...)
 		if err != nil && ctx.Err() != nil {
 			return // interrupted, not Telegram's fault: don't count an attempt
 		}
@@ -167,24 +169,40 @@ func group(ns []store.Notification) []message {
 	return ms
 }
 
-// format writes the message text. Plain text: job titles can contain characters
-// that Telegram's Markdown or HTML modes would need escaped.
-func format(items []store.Notification) string {
+// format writes the alert: one block per job and an Apply button for each.
+// Everything from a job board is escaped: Telegram rejects the whole message
+// over one unescaped "<" or "&", and the notifier treats that 400 as permanent.
+func format(items []store.Notification) (string, []telegram.Button) {
 	var b strings.Builder
+	var buttons []telegram.Button
 	if len(items) == 1 {
-		b.WriteString("New job\n\n")
+		fmt.Fprintf(&b, "🔔 <b>New job at %s</b>\n\n", html.EscapeString(items[0].Company))
 	} else {
-		fmt.Fprintf(&b, "%d new jobs\n\n", len(items))
+		fmt.Fprintf(&b, "🔔 <b>%d new jobs for you</b>\n\n", len(items))
 	}
 	for i, it := range items {
 		if i > 0 {
 			b.WriteString("\n\n")
 		}
-		fmt.Fprintf(&b, "%s: %s\n", it.Company, it.Title)
-		if it.Location != "" {
-			fmt.Fprintf(&b, "%s\n", it.Location)
+		num := ""
+		if len(items) > 1 {
+			num = fmt.Sprintf("%d. ", i+1)
 		}
-		b.WriteString(it.URL)
+		fmt.Fprintf(&b, "%s<b>%s</b>\n%s", num, html.EscapeString(it.Title), html.EscapeString(it.Company))
+		if it.Location != "" {
+			fmt.Fprintf(&b, "\n📍 %s", html.EscapeString(it.Location))
+		}
+		// A button with a malformed URL would get the whole message rejected; fall back to plain text.
+		if !strings.HasPrefix(it.URL, "https://") && !strings.HasPrefix(it.URL, "http://") {
+			fmt.Fprintf(&b, "\n%s", html.EscapeString(it.URL))
+			continue
+		}
+		label := "Apply"
+		if len(items) > 1 {
+			label = fmt.Sprintf("%d. Apply at %s", i+1, it.Company)
+		}
+		buttons = append(buttons, telegram.Button{Text: label, URL: it.URL})
 	}
-	return b.String()
+	b.WriteString("\n\n<i>Matched one of your alerts. /list to see or change them.</i>")
+	return b.String(), buttons
 }

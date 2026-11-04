@@ -73,3 +73,21 @@ func TestErrorsHideTheToken(t *testing.T) {
 		t.Errorf("token leaked into error: %v", err)
 	}
 }
+
+func TestSendWithButtons(t *testing.T) {
+	var sent map[string]any
+	fakeAPI(t, "sendMessage", `{"ok":true,"result":{}}`, &sent)
+
+	err := New("SECRET", http.DefaultClient).Send(context.Background(), 42, "<b>hi</b>",
+		Button{Text: "Apply", URL: "https://x/1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent["parse_mode"] != "HTML" {
+		t.Errorf("parse_mode = %v, want HTML", sent["parse_mode"])
+	}
+	kb, _ := json.Marshal(sent["reply_markup"])
+	if string(kb) != `{"inline_keyboard":[[{"text":"Apply","url":"https://x/1"}]]}` {
+		t.Errorf("reply_markup = %s", kb)
+	}
+}
