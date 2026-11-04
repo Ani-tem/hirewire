@@ -83,8 +83,8 @@ func TestAddCompanyIsIdempotent(t *testing.T) {
 
 func TestAddCompanyRejectsUnknownATS(t *testing.T) {
 	s := testStore(t)
-	// The schema's CHECK constraint only allows greenhouse, lever, ashby.
-	if err := s.AddCompany(context.Background(), "X", "workday", "x"); err == nil {
+	// The schema's CHECK constraint only allows the ATSs we have fetchers for.
+	if err := s.AddCompany(context.Background(), "X", "smartrecruiters", "x"); err == nil {
 		t.Error("expected an error for an unsupported ATS")
 	}
 }

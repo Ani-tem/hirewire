@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS companies (
     id                   BIGSERIAL PRIMARY KEY,
     name                 TEXT        NOT NULL,
-    ats                  TEXT        NOT NULL CHECK (ats IN ('greenhouse', 'lever', 'ashby')),
+    ats                  TEXT        NOT NULL,              -- checked by companies_ats_check below
     slug                 TEXT        NOT NULL,              -- board name on the ATS, e.g. "stripe"
     poll_interval        INTERVAL    NOT NULL DEFAULT '15 minutes',
     next_poll_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -14,6 +14,10 @@ CREATE TABLE IF NOT EXISTS companies (
     enabled              BOOLEAN     NOT NULL DEFAULT true,
     UNIQUE (ats, slug)
 );
+-- Kept outside CREATE TABLE so adding an ATS reaches databases that already exist.
+ALTER TABLE companies DROP CONSTRAINT IF EXISTS companies_ats_check;
+ALTER TABLE companies ADD CONSTRAINT companies_ats_check
+    CHECK (ats IN ('greenhouse', 'lever', 'ashby', 'workday'));
 CREATE INDEX IF NOT EXISTS companies_due_idx ON companies (next_poll_at) WHERE enabled;
 
 CREATE TABLE IF NOT EXISTS jobs (

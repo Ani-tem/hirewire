@@ -2,8 +2,12 @@ package fetcher
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -82,9 +86,68 @@ func TestFetchAshby(t *testing.T) {
 
 func TestEveryAllowedATSHasAFetcher(t *testing.T) {
 	// Mirrors the CHECK constraint on companies.ats in store/schema.sql.
-	for _, ats := range []string{"greenhouse", "lever", "ashby"} {
+	for _, ats := range []string{"greenhouse", "lever", "ashby", "workday"} {
 		if Sources[ats] == nil {
 			t.Errorf("no fetcher registered for %q", ats)
 		}
+	}
+}
+
+func TestFetchWorkday(t *testing.T) {
+	// 25 jobs: a full page of 20, then 5 (the last page). Job 3 is posted in two
+	// places, and job 20 shows up on both pages as if a new posting shifted the list.
+	var details atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/wday/cxs/acme/External/jobs":
+			var req struct{ Offset int }
+			json.NewDecoder(r.Body).Decode(&req)
+			var ps []string
+			from, to := req.Offset, min(req.Offset+20, 25)
+			if req.Offset > 0 {
+				from-- // repeat the last job of the previous page
+			}
+			for i := from; i < to; i++ {
+				loc := "India, Bengaluru"
+				if i == 3 {
+					loc = "2 Locations"
+				}
+				ps = append(ps, fmt.Sprintf(`{"title":"Engineer %d","externalPath":"/job/x/Engineer_%d","locationsText":%q}`, i, i, loc))
+			}
+			fmt.Fprintf(w, `{"total":25,"jobPostings":[%s]}`, strings.Join(ps, ","))
+		case r.Method == http.MethodGet && r.URL.Path == "/wday/cxs/acme/External/job/x/Engineer_3":
+			details.Add(1)
+			w.Write([]byte(`{"jobPostingInfo":{"location":"USA, Austin","additionalLocations":["India, Hyderabad"]}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	workdayOrigin = func(string) string { return srv.URL }
+
+	for range 2 { // the second crawl must find job 3's locations in the cache
+		jobs, err := FetchWorkday(context.Background(), srv.Client(), "acme.wd5/External")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(jobs) != 25 {
+			t.Fatalf("got %d jobs, want 25 (no duplicates)", len(jobs))
+		}
+		j := jobs[3]
+		if j.Location != "USA, Austin; India, Hyderabad" {
+			t.Errorf("multi-location job: location %q, want both places", j.Location)
+		}
+		if j.ID != "/job/x/Engineer_3" || j.URL != srv.URL+"/External/job/x/Engineer_3" || j.Company != "acme" {
+			t.Errorf("bad mapping: %+v", j)
+		}
+	}
+	if n := details.Load(); n != 1 {
+		t.Errorf("fetched job 3's details %d times, want once", n)
+	}
+}
+
+func TestFetchWorkdayRejectsBadBoard(t *testing.T) {
+	if _, err := FetchWorkday(context.Background(), http.DefaultClient, "nvidia"); err == nil {
+		t.Error("want an error for a board without a site")
 	}
 }
