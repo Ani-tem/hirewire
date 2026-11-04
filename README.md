@@ -94,4 +94,5 @@ docs/design.md      high-level design and decisions
 - [x] Telegram bot: subscribe, list, unsubscribe, stop
 - [x] Rate-limited notifier with retries
 - [x] Workday fetcher (newest 100 per board, multi-location jobs resolved and cached)
-- [ ] Deploy, then real users
+- [x] Deploy: Render + Supabase, CI-gated, heartbeat monitored
+- [ ] Real users
