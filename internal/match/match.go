@@ -24,12 +24,26 @@ var aliases = map[string]string{
 	"blr":       "bengaluru",
 	"gurgaon":   "gurugram",
 	"bombay":    "mumbai",
+	"ind":       "india", // "Bangalore, IND"
 	"sr":        "senior",
 	"jr":        "junior",
 	"i":         "1", // "SDE I" and "SDE 1" are the same level
 	"ii":        "2",
 	"iii":       "3",
 	"iv":        "4",
+}
+
+// country maps places (after aliases) to their country, so "@india" also
+// matches "Bengaluru, Karnataka" and "Gurugram", which boards often write without
+// "India". Found on real data: a friend's "@india" missed every one of them.
+var country = map[string]string{
+	"bengaluru": "india", "mumbai": "india", "delhi": "india", "gurugram": "india",
+	"noida": "india", "hyderabad": "india", "pune": "india", "chennai": "india",
+	"kolkata": "india", "ahmedabad": "india", "kochi": "india", "jaipur": "india",
+	"chandigarh": "india", "indore": "india", "coimbatore": "india", "trivandrum": "india",
+	"thiruvananthapuram": "india", "mysore": "india", "mysuru": "india",
+	"karnataka": "india", "maharashtra": "india", "telangana": "india", "haryana": "india",
+	"kerala": "india", "gujarat": "india",
 }
 
 // Matcher is a Filter with every keyword already split into words,
@@ -56,7 +70,7 @@ func (m Matcher) Match(title, location string) bool {
 	if containsAny(t, m.exclude) {
 		return false
 	}
-	if len(m.locations) > 0 && !containsAny(words(location), m.locations) {
+	if len(m.locations) > 0 && !containsAny(placeWords(location), m.locations) {
 		return false
 	}
 	return true
@@ -78,6 +92,18 @@ func words(s string) []string {
 			w = a
 		}
 		ws[i] = w
+	}
+	return ws
+}
+
+// placeWords is words, plus the country of any place it knows. The country goes
+// at the end, so it can't join a city into a false phrase.
+func placeWords(s string) []string {
+	ws := words(s)
+	for _, w := range ws {
+		if c, ok := country[w]; ok && !slices.Contains(ws, c) {
+			ws = append(ws, c)
+		}
 	}
 	return ws
 }

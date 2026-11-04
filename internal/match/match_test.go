@@ -28,6 +28,12 @@ func TestMatch(t *testing.T) {
 		{"remote", ravi, "SDE II", "Remote, India", true},
 		{"a phrase narrows remote", Filter{Locations: []string{"remote india"}}, "SDE", "US - Remote", false},
 		{"a phrase keeps the right remote", Filter{Locations: []string{"remote india"}}, "SDE", "Remote - India", true},
+		{"a city is in its country", Filter{Locations: []string{"india"}}, "SDE", "Bengaluru, Karnataka", true},
+		{"old city name is in its country", Filter{Locations: []string{"india"}}, "SDE", "Gurgaon", true},
+		{"a state is in its country", Filter{Locations: []string{"india"}}, "SDE", "Pune, Maharashtra", true},
+		{"IND means India", Filter{Locations: []string{"india"}}, "SDE", "Bangalore, IND", true},
+		{"Indiana is not India", Filter{Locations: []string{"india"}}, "SDE", "Indianapolis, IN", false},
+		{"a city doesn't make remote india", Filter{Locations: []string{"remote india"}}, "SDE", "Bengaluru", false},
 
 		// Whole words, not substrings.
 		{"intern is not internal", Filter{Include: []string{"intern"}}, "Internal Tools Engineer", "", false},
