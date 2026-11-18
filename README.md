@@ -17,7 +17,8 @@ hirewire polls the public job-board APIs that companies use (Greenhouse, Lever, 
 
 The modules talk to each other only through Postgres. The full write-up is in [docs/design.md](docs/design.md). The main correctness choices:
 
-- **New-job detection inside the database.** A whole board goes in as one batched `INSERT … ON CONFLICT DO NOTHING RETURNING id`. Only jobs never seen before come back, with no separate read-then-write race.
+- **New-job detection with little traffic.** Each crawl diffs the board against an in-memory set of stored job IDs and sends Postgres only the changes; new jobs go in as one batched `INSERT … ON CONFLICT DO NOTHING RETURNING id`, so even a stale cache can't double-alert. Sending whole boards every crawl came to ~10 GB a month of outbound traffic, twice Render's free allowance; the diff measured ~70× less.
+- **Bounded storage.** Jobs that leave their board are marked removed and deleted after a 14-day grace period; delivered notifications after 30 days. A job re-posted within the grace period is un-marked without a second alert.
 - **Idempotent writes.** Seeding and re-crawling are safe to repeat. Unique keys (`(ats, slug)`, `(company_id, external_id)`) make duplicates impossible, not merely unlikely.
 - **No alert floods.** A company's first crawl is a silent baseline. Alerts start from the second crawl.
 - **Exactly-one alert per user per job.** A transactional outbox (`notifications` table) with `UNIQUE(user_id, job_id)` means a crash or retry never double-sends or drops an alert.
@@ -95,4 +96,5 @@ docs/design.md      high-level design and decisions
 - [x] Rate-limited notifier with retries
 - [x] Workday fetcher (newest 100 per board, multi-location jobs resolved and cached)
 - [x] Deploy: Render + Supabase, CI-gated, heartbeat monitored
+- [x] Diff crawls in memory (outbound traffic cut ~70×) and expire closed jobs
 - [ ] Real users

@@ -114,6 +114,7 @@ func run() {
 	} else {
 		slog.Warn("TELEGRAM_BOT_TOKEN not set: crawling only, no bot and no alerts")
 	}
+	wg.Go(func() { prune(ctx, s) })
 	if url := os.Getenv("HEALTHCHECK_URL"); url != "" {
 		wg.Go(func() { heartbeat(ctx, s, url) })
 	}
@@ -210,6 +211,30 @@ func serveHealth(ctx context.Context, port string) {
 	}()
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("health server", "err", err)
+	}
+}
+
+// prune deletes jobs that left their board two weeks ago and month-old
+// delivered notifications, at start and then every 6 hours, so the database
+// stays the size of the live boards instead of growing forever. The two weeks
+// are a grace period: a job pulled and re-posted within it keeps its row and
+// alerts nobody twice.
+func prune(ctx context.Context, s *store.Store) {
+	const every, jobsAfter, notificationsAfter = 6 * time.Hour, 14 * 24 * time.Hour, 30 * 24 * time.Hour
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		p, err := s.Prune(ctx, jobsAfter, notificationsAfter)
+		if err != nil && ctx.Err() == nil {
+			slog.Error("prune", "err", err)
+		} else if err == nil {
+			slog.Info("pruned", "jobs", p.Jobs, "notifications", p.Notifications)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
 	}
 }
 

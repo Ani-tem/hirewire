@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     removed_at    TIMESTAMPTZ,
     UNIQUE (company_id, external_id)                        -- identity of a job; makes inserts dedupe
 );
+-- Prune finds jobs that have left their board; the partial index skips the live ones.
+CREATE INDEX IF NOT EXISTS jobs_removed_idx ON jobs (removed_at) WHERE removed_at IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS users (
     id               BIGSERIAL PRIMARY KEY,

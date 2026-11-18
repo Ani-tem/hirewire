@@ -131,6 +131,145 @@ func TestRecordCrawl(t *testing.T) {
 	}
 }
 
+// removedAt returns each stored job's removed_at, keyed by external ID (nil = on the board).
+func removedAt(t *testing.T, s *Store, companyID int64) map[string]*time.Time {
+	t.Helper()
+	rows, err := s.pool.Query(context.Background(),
+		`SELECT external_id, removed_at FROM jobs WHERE company_id = $1`, companyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]*time.Time{}
+	var id string
+	var at *time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&id, &at}, func() error { got[id] = at; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func TestRecordCrawlTracksJobsLeavingTheBoard(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	slug := "test-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	if err := s.AddCompany(ctx, "Acme", "greenhouse", slug); err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.GetCompany(ctx, "greenhouse", slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		s.pool.Exec(ctx, `DELETE FROM jobs WHERE company_id = $1`, c.ID)
+		s.pool.Exec(ctx, `DELETE FROM companies WHERE id = $1`, c.ID)
+	})
+	job := func(id string) fetcher.Job {
+		return fetcher.Job{ID: id, Title: "Engineer " + id, Location: "Bengaluru", URL: "https://x/" + id}
+	}
+	crawl := func(st *Store, board ...fetcher.Job) CrawlResult {
+		t.Helper()
+		res, err := st.RecordCrawl(ctx, c.ID, board)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+
+	crawl(s, job("1"), job("2"), job("3")) // baseline
+	if res := crawl(s, job("1"), job("3")); res.Gone != 1 || len(res.NewJobIDs) != 0 {
+		t.Fatalf("job 2 closed: got %d gone, %d new; want 1 gone, 0 new", res.Gone, len(res.NewJobIDs))
+	}
+	if r := removedAt(t, s, c.ID); r["2"] == nil || r["1"] != nil || r["3"] != nil {
+		t.Fatalf("only job 2 should be marked removed, got %v", r)
+	}
+
+	// An empty board is treated as a glitch: nothing is marked removed.
+	if res := crawl(s); res.Gone != 0 {
+		t.Fatalf("empty board: got %d gone, want 0", res.Gone)
+	}
+
+	// Job 2 is re-posted: unmarked, and not reported as new (so nobody is alerted twice).
+	if res := crawl(s, job("1"), job("2"), job("3")); len(res.NewJobIDs) != 0 || res.Gone != 0 {
+		t.Fatalf("job 2 back: got %d new, %d gone; want 0, 0", len(res.NewJobIDs), res.Gone)
+	}
+	if r := removedAt(t, s, c.ID); r["2"] != nil {
+		t.Fatalf("job 2 should be back on the board, got removed_at %v", r["2"])
+	}
+
+	// A restarted process has an empty cache and must rebuild it from the database.
+	restarted := &Store{pool: s.pool, known: map[int64]map[string]bool{}}
+	if res := crawl(restarted, job("1"), job("2"), job("3"), job("4")); len(res.NewJobIDs) != 1 || res.Gone != 0 {
+		t.Fatalf("after restart: got %d new, %d gone; want 1 new (job 4), 0 gone", len(res.NewJobIDs), res.Gone)
+	}
+}
+
+func TestPruneDeletesOnlyLongGoneJobs(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	slug := "test-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	if err := s.AddCompany(ctx, "Acme", "greenhouse", slug); err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.GetCompany(ctx, "greenhouse", slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID, err := s.AddUser(ctx, time.Now().UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		s.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID)
+		s.pool.Exec(ctx, `DELETE FROM jobs WHERE company_id = $1`, c.ID)
+		s.pool.Exec(ctx, `DELETE FROM companies WHERE id = $1`, c.ID)
+	})
+	if _, err := s.AddSubscription(ctx, userID, match.Filter{Include: []string{"engineer"}}); err != nil {
+		t.Fatal(err)
+	}
+	job := func(id string) fetcher.Job {
+		return fetcher.Job{ID: id, Title: "Engineer " + id, Location: "Bengaluru", URL: "https://x/" + id}
+	}
+
+	// Baseline with job 1, then jobs 2 and 3 are posted (and alerted), then 2 and 3 close.
+	for _, board := range [][]fetcher.Job{{job("1")}, {job("1"), job("2"), job("3")}, {job("1")}} {
+		if _, err := s.RecordCrawl(ctx, c.ID, board); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Job 2 closed long ago, job 3 only just.
+	if _, err := s.pool.Exec(ctx, `UPDATE jobs SET removed_at = now() - interval '20 days'
+		WHERE company_id = $1 AND external_id = '2'`, c.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := s.Prune(ctx, 14*24*time.Hour, 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Jobs < 1 || p.Notifications < 1 { // other tests' leftovers may add to the counts
+		t.Fatalf("got %+v, want at least job 2 and its notification deleted", p)
+	}
+	r := removedAt(t, s, c.ID)
+	if _, ok := r["2"]; ok {
+		t.Error("job 2 (gone 20 days) should be deleted")
+	}
+	if _, ok := r["1"]; !ok {
+		t.Error("job 1 (still on the board) should be kept")
+	}
+	if _, ok := r["3"]; !ok {
+		t.Error("job 3 (gone moments ago) should be kept for the grace period")
+	}
+
+	// Job 2 is re-posted after being deleted: it is a new posting now, and alerts again.
+	res, err := s.RecordCrawl(ctx, c.ID, []fetcher.Job{job("1"), job("2")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.NewJobIDs) != 1 {
+		t.Fatalf("job 2 re-posted after pruning: got %d new, want 1", len(res.NewJobIDs))
+	}
+}
+
 func TestClaimDueCompaniesHandsEachCompanyOutOnce(t *testing.T) {
 	s := testStore(t)
 	reset(t, s)

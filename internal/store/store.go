@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/Ani-tem/hirewire/internal/fetcher"
@@ -37,6 +38,15 @@ type Subscription struct {
 
 type Store struct {
 	pool *pgxpool.Pool
+
+	// known caches, per company, the external IDs already stored: true while the
+	// job is on the board, false once it has gone. With it a crawl sends the
+	// database only what changed instead of the whole board, which matters
+	// because hosts bill outbound traffic: re-sending ~20k jobs every 15 minutes
+	// came to ~10 GB a month. Filled from the database on a company's first
+	// crawl (reads are inbound, so free), dropped whenever rows are deleted.
+	mu    sync.Mutex
+	known map[int64]map[string]bool
 }
 
 // Open connects to Postgres and applies the schema.
@@ -49,7 +59,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
-	return &Store{pool: pool}, nil
+	return &Store{pool: pool, known: map[int64]map[string]bool{}}, nil
 }
 
 func (s *Store) Close() { s.pool.Close() }
@@ -237,16 +247,84 @@ type CrawlResult struct {
 	NewJobIDs []int64 // jobs we had never seen before
 	Baseline  bool    // first crawl of this company: NewJobIDs were already on the board, so don't alert
 	Notified  int     // notifications queued for the new jobs
+	Gone      int     // jobs no longer on the board, now marked removed
+}
+
+// knownJobs returns the cached state of a company's stored jobs, loading it on first use.
+// Only the worker crawling that company touches its map (claims are exclusive),
+// so the lock guards the outer map only.
+func (s *Store) knownJobs(ctx context.Context, companyID int64) (map[string]bool, error) {
+	s.mu.Lock()
+	k, ok := s.known[companyID]
+	s.mu.Unlock()
+	if ok {
+		return k, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT external_id, removed_at IS NULL FROM jobs WHERE company_id = $1`, companyID)
+	if err != nil {
+		return nil, err
+	}
+	k = map[string]bool{}
+	var id string
+	var present bool
+	if _, err := pgx.ForEachRow(rows, []any{&id, &present}, func() error {
+		k[id] = present
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.known[companyID] = k
+	s.mu.Unlock()
+	return k, nil
+}
+
+// forget drops the whole cache, so the next crawl of each company reloads it.
+func (s *Store) forget() {
+	s.mu.Lock()
+	s.known = map[int64]map[string]bool{}
+	s.mu.Unlock()
 }
 
 // RecordCrawl saves a company's current postings, reports which are new and
-// queues a notification for every user whose subscription matches one.
+// queues a notification for every user whose subscription matches one. Jobs
+// missing from the board are marked removed (Prune deletes them later); one
+// that comes back is unmarked, without a second alert.
 // Jobs, notifications and the baseline flag commit together or not at all:
 // if we crash before commit, the next crawl sees the same jobs as new and
 // tries again, so an alert can be late but never lost.
 func (s *Store) RecordCrawl(ctx context.Context, companyID int64, jobs []fetcher.Job) (CrawlResult, error) {
+	known, err := s.knownJobs(ctx, companyID)
+	if err != nil {
+		return CrawlResult{}, fmt.Errorf("record crawl for company %d: load known jobs: %w", companyID, err)
+	}
+
+	// Diff the board against what is stored; only the differences go to the database.
+	onBoard := make(map[string]bool, len(jobs))
+	var fresh []fetcher.Job
+	var back, gone []string
+	for _, j := range jobs {
+		onBoard[j.ID] = true
+		present, stored := known[j.ID]
+		switch {
+		case !stored:
+			fresh = append(fresh, j)
+		case !present:
+			back = append(back, j.ID)
+		}
+	}
+	// An empty board is more often a glitch on the ATS's side than every job
+	// closing at once, so it removes nothing.
+	if len(jobs) > 0 {
+		for id, present := range known {
+			if present && !onBoard[id] {
+				gone = append(gone, id)
+			}
+		}
+	}
+
 	var res CrawlResult
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		// FOR UPDATE locks the company row until commit, so two crawls of the
 		// same board can't both read baseline_done = false.
 		var baselineDone bool
@@ -256,13 +334,31 @@ func (s *Store) RecordCrawl(ctx context.Context, companyID int64, jobs []fetcher
 			return err
 		}
 
-		inserted, err := insertJobs(ctx, tx, companyID, jobs)
-		if err != nil {
-			return err
+		var inserted []newJob
+		if len(fresh) > 0 {
+			// ON CONFLICT inside still dedupes, so a stale cache can't cause a double alert.
+			if inserted, err = insertJobs(ctx, tx, companyID, fresh); err != nil {
+				return err
+			}
 		}
 		notified := 0
 		if baselineDone && len(inserted) > 0 { // the baseline is what was already there, not news
 			if notified, err = queueNotifications(ctx, tx, inserted); err != nil {
+				return err
+			}
+		}
+		if len(gone) > 0 {
+			if _, err := tx.Exec(ctx, `
+				UPDATE jobs SET removed_at = now()
+				WHERE company_id = $1 AND external_id = ANY($2) AND removed_at IS NULL`,
+				companyID, gone); err != nil {
+				return err
+			}
+		}
+		if len(back) > 0 {
+			if _, err := tx.Exec(ctx, `
+				UPDATE jobs SET removed_at = NULL WHERE company_id = $1 AND external_id = ANY($2)`,
+				companyID, back); err != nil {
 				return err
 			}
 		}
@@ -279,13 +375,65 @@ func (s *Store) RecordCrawl(ctx context.Context, companyID int64, jobs []fetcher
 		for i, j := range inserted {
 			ids[i] = j.ID
 		}
-		res = CrawlResult{NewJobIDs: ids, Baseline: !baselineDone, Notified: notified}
+		res = CrawlResult{NewJobIDs: ids, Baseline: !baselineDone, Notified: notified, Gone: len(gone)}
 		return nil
 	})
 	if err != nil {
 		return CrawlResult{}, fmt.Errorf("record crawl for company %d: %w", companyID, err)
 	}
+
+	// Committed: bring the cache in line. Never before commit, or a rolled-back
+	// crawl would hide its new jobs from the retry.
+	for _, j := range fresh {
+		known[j.ID] = true
+	}
+	for _, id := range back {
+		known[id] = true
+	}
+	for _, id := range gone {
+		known[id] = false
+	}
 	return res, nil
+}
+
+// Pruned is what one Prune deleted.
+type Pruned struct {
+	Jobs          int64
+	Notifications int64
+}
+
+// Prune deletes jobs that have been off their board for longer than jobsAfter,
+// and delivered or abandoned notifications older than notificationsAfter, so
+// the tables stop growing. Deleting an old notification can't cause a repeat
+// alert: alerts are only queued when a job is first inserted.
+func (s *Store) Prune(ctx context.Context, jobsAfter, notificationsAfter time.Duration) (Pruned, error) {
+	var p Pruned
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		// Notifications point at jobs, so theirs go first.
+		tag, err := tx.Exec(ctx, `
+			DELETE FROM notifications
+			WHERE job_id IN (SELECT id FROM jobs WHERE removed_at < now() - make_interval(secs => $1))
+			   OR (status IN ('sent', 'failed') AND created_at < now() - make_interval(secs => $2))`,
+			jobsAfter.Seconds(), notificationsAfter.Seconds())
+		if err != nil {
+			return err
+		}
+		p.Notifications = tag.RowsAffected()
+		tag, err = tx.Exec(ctx, `DELETE FROM jobs WHERE removed_at < now() - make_interval(secs => $1)`,
+			jobsAfter.Seconds())
+		if err != nil {
+			return err
+		}
+		p.Jobs = tag.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return Pruned{}, fmt.Errorf("prune: %w", err)
+	}
+	if p.Jobs > 0 {
+		s.forget() // the cache still lists the deleted jobs
+	}
+	return p, nil
 }
 
 // newJob is a just-inserted job, with what matching needs.
